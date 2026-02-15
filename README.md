@@ -1,6 +1,6 @@
 # Themis — Litigation Case Intelligence
 
-A personalized litigation case discovery platform for FTI Consulting professionals. Built with Next.js, Supabase, and Google Gemini.
+A personalized litigation case discovery platform for professionals. Built with Next.js, Supabase, and Google Gemini.
 
 ## Features
 
