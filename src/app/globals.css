@@ -1,0 +1,110 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Serif+Display:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@layer base {
+  body {
+    @apply font-body text-themis-950 antialiased;
+    background: #f8fafb;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center px-5 py-2.5 rounded-lg
+           bg-themis-700 text-white font-medium text-sm
+           hover:bg-themis-800 active:bg-themis-900
+           transition-all duration-200 ease-out
+           shadow-sm hover:shadow-md
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center px-5 py-2.5 rounded-lg
+           bg-white text-themis-700 font-medium text-sm
+           border border-themis-200
+           hover:bg-themis-50 hover:border-themis-300
+           active:bg-themis-100
+           transition-all duration-200 ease-out
+           shadow-sm;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center px-3 py-2 rounded-lg
+           text-themis-600 font-medium text-sm
+           hover:bg-themis-50 active:bg-themis-100
+           transition-all duration-150;
+  }
+
+  .card {
+    @apply bg-white rounded-xl border border-gray-100/80
+           shadow-[0_1px_3px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.06)]
+           transition-all duration-200;
+  }
+
+  .card-hover {
+    @apply card hover:shadow-[0_4px_12px_rgba(0,0,0,0.07),0_1px_3px_rgba(0,0,0,0.05)]
+           hover:border-themis-200/60 hover:-translate-y-0.5;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-2.5 rounded-lg border border-gray-200
+           bg-white text-themis-950 text-sm
+           placeholder:text-gray-400
+           focus:outline-none focus:ring-2 focus:ring-themis-500/20 focus:border-themis-400
+           transition-all duration-200;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold tracking-wide uppercase;
+  }
+
+  .badge-high {
+    @apply badge bg-emerald-50 text-emerald-700 border border-emerald-200/60;
+  }
+
+  .badge-medium {
+    @apply badge bg-amber-50 text-amber-700 border border-amber-200/60;
+  }
+
+  .badge-low {
+    @apply badge bg-red-50 text-red-700 border border-red-200/60;
+  }
+
+  .page-container {
+    @apply max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8;
+  }
+
+  .section-title {
+    @apply font-display text-2xl text-themis-900;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c5cfd6;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca8b1;
+}
+
+/* Noise texture overlay */
+.noise-bg::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none;
+  opacity: 0.015;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  z-index: 50;
+}
