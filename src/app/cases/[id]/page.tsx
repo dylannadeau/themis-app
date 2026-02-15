@@ -141,11 +141,12 @@ export default function CaseDetailPage() {
   if (!caseData) return null;
 
   const result = caseData.consultant_results;
-  const viabilityClass = {
+  const viabilityMap: Record<string, string> = {
     high: 'badge-high',
     medium: 'badge-medium',
     low: 'badge-low',
-  }[result?.case_viability || ''] || '';
+  };
+  const viabilityClass = viabilityMap[result?.case_viability || ''] || '';
 
   return (
     <AppShell>
