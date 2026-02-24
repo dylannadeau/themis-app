@@ -11,8 +11,6 @@ import { rerankWithProfile, ScoredCase, PreferenceProfileEntry, DimensionWeight 
 import { LayoutDashboard, Loader2, AlertCircle, Search } from 'lucide-react';
 import Link from 'next/link';
 
-const SENTINEL_VALUES = ['No complaint found', 'ERROR', 'Failed to fetch pleadings.', ''];
-
 export default function DashboardPage() {
   const [cases, setCases] = useState<ScoredCase[]>([]);
   const [loading, setLoading] = useState(true);
@@ -20,6 +18,7 @@ export default function DashboardPage() {
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
   const [availableNatures, setAvailableNatures] = useState<string[]>([]);
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
+  const [hasBio, setHasBio] = useState<boolean | null>(null);
   const router = useRouter();
   const supabase = createClient();
 
@@ -46,7 +45,6 @@ export default function DashboardPage() {
         .order('filed', { ascending: false })
         .limit(100);
 
-      // Apply filters
       if (filters.dateRange.from) {
         query = query.gte('filed', filters.dateRange.from);
       }
@@ -90,38 +88,40 @@ export default function DashboardPage() {
         user_favorite: favoritesSet.has(c.id),
       }));
 
-      // Client-side filters
       if (filters.favoritesOnly) {
         merged = merged.filter((c) => c.user_favorite);
       }
 
-      // Fetch new preference profile and dimension weights
-      const { data: profile } = await supabase
-        .from('user_preference_profile')
-        .select('dimension, entity, cumulative_score, mention_count, avg_score')
-        .eq('user_id', session.user.id);
+      // Fetch preference profile, dimension weights, and bio
+      const [profileResult, weightsResult, settingsResult] = await Promise.all([
+        supabase
+          .from('user_preference_profile')
+          .select('dimension, entity, cumulative_score, mention_count, avg_score')
+          .eq('user_id', session.user.id),
+        supabase
+          .from('user_dimension_weights')
+          .select('dimension, total_mentions, weight')
+          .eq('user_id', session.user.id),
+        supabase
+          .from('user_settings')
+          .select('api_key_encrypted, bio_text')
+          .eq('user_id', session.user.id)
+          .single(),
+      ]);
 
-      const { data: weights } = await supabase
-        .from('user_dimension_weights')
-        .select('dimension, total_mentions, weight')
-        .eq('user_id', session.user.id);
+      const bioText = settingsResult.data?.bio_text || null;
+      setHasApiKey(!!settingsResult.data?.api_key_encrypted);
+      setHasBio(!!bioText);
 
-      // Rerank using new profile-based scoring
+      // Rerank using profile + bio
       const reranked = rerankWithProfile(
         merged,
-        (profile || []) as PreferenceProfileEntry[],
-        (weights || []) as DimensionWeight[]
+        (profileResult.data || []) as PreferenceProfileEntry[],
+        (weightsResult.data || []) as DimensionWeight[],
+        bioText
       );
 
       setCases(reranked);
-
-      // Check API key status
-      const { data: settings } = await supabase
-        .from('user_settings')
-        .select('api_key_encrypted')
-        .eq('user_id', session.user.id)
-        .single();
-      setHasApiKey(!!settings?.api_key_encrypted);
 
     } catch (err: any) {
       setError(err.message || 'Failed to load cases');
@@ -130,7 +130,6 @@ export default function DashboardPage() {
     }
   }, [filters, router, supabase]);
 
-  // Fetch filter options on mount
   useEffect(() => {
     async function fetchFilterOptions() {
       const { data: natures } = await supabase
@@ -192,16 +191,34 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* Bio Banner */}
+        {hasBio === false && hasApiKey !== false && (
+          <div className="card p-4 mb-6 border-themis-200 bg-themis-50/50 animate-slide-down">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-themis-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-themis-800">
+                  Add your professional bio to get personalized case rankings
+                </p>
+                <p className="text-xs text-themis-600 mt-0.5">
+                  Your bio helps match you with relevant cases immediately.{' '}
+                  <Link href="/settings" className="underline hover:text-themis-800">
+                    Add it in Settings
+                  </Link>
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Content */}
         <div className="flex flex-col lg:flex-row gap-6">
-          {/* Filters */}
           <FilterPanel
             filters={filters}
             onChange={setFilters}
             availableNatures={availableNatures}
           />
 
-          {/* Cases Grid */}
           <div className="flex-1">
             {loading ? (
               <div className="flex items-center justify-center py-20">

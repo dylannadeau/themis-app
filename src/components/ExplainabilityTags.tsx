@@ -1,7 +1,7 @@
 'use client';
 
 import { ScoreExplanation } from '@/lib/personalization';
-import { TrendingUp, TrendingDown } from 'lucide-react';
+import { TrendingUp, TrendingDown, UserCheck } from 'lucide-react';
 
 interface ExplainabilityTagsProps {
   explanations: ScoreExplanation[];
@@ -16,6 +16,7 @@ const dimensionLabels: Record<string, string> = {
   jurisdiction: 'Jurisdiction',
   judge: 'Judge',
   topic: 'Topic',
+  bio: 'Bio Match',
 };
 
 export default function ExplainabilityTags({ explanations }: ExplainabilityTagsProps) {
@@ -25,16 +26,22 @@ export default function ExplainabilityTags({ explanations }: ExplainabilityTagsP
     <div className="flex flex-wrap gap-1.5 mt-2">
       {explanations.map((exp, i) => {
         const isPositive = exp.weighted_contribution > 0;
+        const isBio = exp.dimension === 'bio';
+
         return (
           <span
             key={i}
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ${
-              isPositive
+              isBio
+                ? 'bg-themis-50 text-themis-700 border border-themis-200/60'
+                : isPositive
                 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
                 : 'bg-red-50 text-red-600 border border-red-200/60'
             }`}
           >
-            {isPositive ? (
+            {isBio ? (
+              <UserCheck className="w-3 h-3" />
+            ) : isPositive ? (
               <TrendingUp className="w-3 h-3" />
             ) : (
               <TrendingDown className="w-3 h-3" />
@@ -43,9 +50,6 @@ export default function ExplainabilityTags({ explanations }: ExplainabilityTagsP
               {dimensionLabels[exp.dimension] || exp.dimension}
             </span>
             {exp.entity}
-            <span className="font-mono text-[9px] opacity-70">
-              {exp.avg_score > 0 ? '+' : ''}{exp.avg_score.toFixed(1)}
-            </span>
           </span>
         );
       })}

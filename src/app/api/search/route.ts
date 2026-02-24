@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 });
     }
 
-    // Get user settings for Gemini key
+    // Get user settings
     const { data: settings } = await supabase
       .from('user_settings')
       .select('*')
@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
 
     let synthesis: string | null = null;
 
-    // Try vector search if HuggingFace token is available
+    // Vector search
     let matchedCaseIds: string[] = [];
     const hfToken = process.env.HUGGINGFACE_API_TOKEN;
 
@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ cases: [], synthesis: null, query, total_count: 0 });
     }
 
-    // Fetch full case data (no longer joining consultant_results)
+    // Fetch full case data
     const { data: cases } = await supabase
       .from('cases')
       .select('*')
@@ -113,7 +113,6 @@ export async function POST(request: NextRequest) {
       (reactions || []).map((r: any) => [r.case_id, r])
     );
 
-    // Merge results
     const merged = (cases || [])
       .filter((c: any) => !SENTINEL_VALUES.includes(c.complaint_summary || ''))
       .map((c: any) => ({
@@ -125,22 +124,26 @@ export async function POST(request: NextRequest) {
     const idOrder = new Map(matchedCaseIds.map((id, i) => [id, i]));
     merged.sort((a: any, b: any) => (idOrder.get(a.id) ?? 99) - (idOrder.get(b.id) ?? 99));
 
-    // Fetch preference profile and dimension weights for reranking
-    const { data: profile } = await supabase
-      .from('user_preference_profile')
-      .select('dimension, entity, cumulative_score, mention_count, avg_score')
-      .eq('user_id', session.user.id);
+    // Fetch preference profile, dimension weights
+    const [profileResult, weightsResult] = await Promise.all([
+      supabase
+        .from('user_preference_profile')
+        .select('dimension, entity, cumulative_score, mention_count, avg_score')
+        .eq('user_id', session.user.id),
+      supabase
+        .from('user_dimension_weights')
+        .select('dimension, total_mentions, weight')
+        .eq('user_id', session.user.id),
+    ]);
 
-    const { data: weights } = await supabase
-      .from('user_dimension_weights')
-      .select('dimension, total_mentions, weight')
-      .eq('user_id', session.user.id);
+    const bioText = settings?.bio_text || null;
 
-    // Rerank with profile-based scoring
+    // Rerank with profile + bio
     const finalResults = rerankWithProfile(
       merged,
-      (profile || []) as PreferenceProfileEntry[],
-      (weights || []) as DimensionWeight[]
+      (profileResult.data || []) as PreferenceProfileEntry[],
+      (weightsResult.data || []) as DimensionWeight[],
+      bioText
     );
 
     // Optional: Gemini synthesis

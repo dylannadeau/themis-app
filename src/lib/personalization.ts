@@ -28,7 +28,6 @@ export interface ScoredCase extends CaseWithResult {
 
 /**
  * Default dimension weights when user has no history yet.
- * These get overridden by learned weights as soon as the user submits feedback.
  */
 const DEFAULT_DIMENSION_WEIGHTS: Record<string, number> = {
   firm: 0.15,
@@ -41,14 +40,15 @@ const DEFAULT_DIMENSION_WEIGHTS: Record<string, number> = {
   topic: 0.15,
 };
 
+/** Minimum narratives before feedback-based scoring kicks in */
+const COLD_START_THRESHOLD = 3;
+
 /**
  * Extract matchable metadata from a case, keyed by dimension.
- * Returns an array of {dimension, value} pairs.
  */
 function extractCaseDimensions(caseData: CaseWithResult): { dimension: string; value: string }[] {
   const dims: { dimension: string; value: string }[] = [];
 
-  // Direct metadata mappings
   if (caseData.entity) dims.push({ dimension: 'firm', value: caseData.entity.trim() });
   if (caseData.nature_of_suit) dims.push({ dimension: 'practice_area', value: caseData.nature_of_suit.trim() });
   if (caseData.cause_of_action) dims.push({ dimension: 'practice_area', value: caseData.cause_of_action.trim() });
@@ -56,7 +56,6 @@ function extractCaseDimensions(caseData: CaseWithResult): { dimension: string; v
   if (caseData.court_name) dims.push({ dimension: 'jurisdiction', value: caseData.court_name.trim() });
   if (caseData.judge) dims.push({ dimension: 'judge', value: caseData.judge.trim() });
 
-  // Extract attorney/client names from JSON arrays
   const attorneys = caseData.attorneys as any;
   if (Array.isArray(attorneys)) {
     for (const a of attorneys) {
@@ -85,9 +84,7 @@ function extractCaseDimensions(caseData: CaseWithResult): { dimension: string; v
 }
 
 /**
- * Compute topic similarity between user's topic preferences and a case's complaint summary.
- * Uses simple keyword overlap — each word in the topic entity that appears in the summary
- * contributes to the match score.
+ * Compute topic similarity between topic preferences and a case's complaint summary.
  */
 function computeTopicScore(
   topicPreferences: PreferenceProfileEntry[],
@@ -108,7 +105,6 @@ function computeTopicScore(
     const matchedWords = topicWords.filter((word) => summaryLower.includes(word));
     const matchRatio = matchedWords.length / topicWords.length;
 
-    // Only count if at least 50% of topic words match
     if (matchRatio >= 0.5) {
       const contribution = pref.avg_score * matchRatio;
       totalScore += contribution;
@@ -125,8 +121,79 @@ function computeTopicScore(
 }
 
 /**
+ * Compute bio relevance score for a case.
+ * Tokenizes the bio and the case's complaint summary + metadata,
+ * then scores based on keyword overlap.
+ *
+ * Returns a 0-1 score and an explanation if relevant.
+ */
+function computeBioScore(
+  bioText: string | null,
+  caseData: CaseWithResult
+): { score: number; explanation: ScoreExplanation | null } {
+  if (!bioText || !bioText.trim()) {
+    return { score: 0, explanation: null };
+  }
+
+  // Build case text from summary + metadata
+  const caseTextParts: string[] = [];
+  if (caseData.complaint_summary) caseTextParts.push(caseData.complaint_summary);
+  if (caseData.nature_of_suit) caseTextParts.push(caseData.nature_of_suit);
+  if (caseData.cause_of_action) caseTextParts.push(caseData.cause_of_action);
+  if (caseData.case_type) caseTextParts.push(caseData.case_type);
+  if (caseData.court_name) caseTextParts.push(caseData.court_name);
+
+  const caseText = caseTextParts.join(' ').toLowerCase();
+  if (!caseText) return { score: 0, explanation: null };
+
+  // Tokenize bio into meaningful words (skip common stop words, keep 3+ char words)
+  const stopWords = new Set([
+    'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had',
+    'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'from', 'with',
+    'they', 'this', 'that', 'will', 'each', 'make', 'like', 'long', 'look',
+    'many', 'some', 'them', 'than', 'been', 'would', 'about', 'their', 'which',
+    'could', 'other', 'into', 'more', 'also', 'over', 'such', 'after', 'most',
+    'work', 'worked', 'working', 'including', 'experience', 'years', 'year',
+  ]);
+
+  const bioWords = bioText
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !stopWords.has(w));
+
+  // Deduplicate
+  const uniqueBioWords = [...new Set(bioWords)];
+  if (uniqueBioWords.length === 0) return { score: 0, explanation: null };
+
+  // Count matches
+  const matchedWords = uniqueBioWords.filter((word) => caseText.includes(word));
+  const matchRatio = matchedWords.length / uniqueBioWords.length;
+
+  // Only consider it a meaningful match if enough words overlap
+  if (matchRatio < 0.05 || matchedWords.length < 2) {
+    return { score: 0, explanation: null };
+  }
+
+  // Score scales with match ratio but caps at 1.0
+  const score = Math.min(1.0, matchRatio * 3);
+
+  // Build a short explanation from the top matched terms
+  const topMatches = matchedWords.slice(0, 4).join(', ');
+
+  return {
+    score,
+    explanation: {
+      dimension: 'bio',
+      entity: topMatches,
+      avg_score: score,
+      weighted_contribution: score,
+    },
+  };
+}
+
+/**
  * Score a single case against the user's preference profile.
- * Returns the personalization score and explanations for why.
  */
 function scoreCase(
   caseData: CaseWithResult,
@@ -138,7 +205,6 @@ function scoreCase(
   const explanations: ScoreExplanation[] = [];
   let totalScore = 0;
 
-  // Build a lookup: dimension -> entity -> profile entry
   const profileLookup = new Map<string, Map<string, PreferenceProfileEntry>>();
   for (const entry of profile) {
     if (!profileLookup.has(entry.dimension)) {
@@ -147,7 +213,6 @@ function scoreCase(
     profileLookup.get(entry.dimension)!.set(entry.entity.toLowerCase(), entry);
   }
 
-  // Score entity-based dimensions (everything except topic)
   for (const { dimension, value } of caseDimensions) {
     const dimensionMap = profileLookup.get(dimension);
     if (!dimensionMap) continue;
@@ -167,7 +232,6 @@ function scoreCase(
     });
   }
 
-  // Score topic dimension via complaint summary matching
   const topicWeight = weights.get('topic') ?? DEFAULT_DIMENSION_WEIGHTS.topic ?? 0.15;
   const { score: topicScore, matchedTopics } = computeTopicScore(
     topicPreferences,
@@ -188,65 +252,114 @@ function scoreCase(
 }
 
 /**
- * Rerank cases using the user's preference profile and dimension weights.
- * Blends base relevance (position) with personalization score.
+ * Rerank cases using the user's preference profile, dimension weights, and bio.
  *
- * @param cases - Cases in their base relevance order (newest first, or vector similarity order)
- * @param profile - User's preference profile entries
- * @param dimensionWeights - User's learned dimension weights
- * @returns Cases re-sorted with personalization scores and explanations
+ * Scoring strategy:
+ * - If no bio and no profile: return cases in base order (no personalization)
+ * - If bio but < 3 narratives: lean heavily on bio similarity
+ * - If >= 3 narratives: blend bio + feedback, with feedback growing in weight over time
  */
 export function rerankWithProfile(
   cases: CaseWithResult[],
   profile: PreferenceProfileEntry[],
-  dimensionWeights: DimensionWeight[]
+  dimensionWeights: DimensionWeight[],
+  bioText?: string | null
 ): ScoredCase[] {
   if (cases.length === 0) return [];
 
-  // Build weights map
+  const hasBio = !!bioText && bioText.trim().length > 0;
+  const hasProfile = profile.length > 0;
+
+  // No personalization data at all — return as-is
+  if (!hasBio && !hasProfile) {
+    return cases.map((c) => ({ ...c, personalization_score: 0, explanations: [] }));
+  }
+
   const weights = new Map<string, number>();
   for (const dw of dimensionWeights) {
     weights.set(dw.dimension, dw.weight);
   }
 
-  // Separate topic preferences for complaint summary matching
   const topicPreferences = profile.filter((p) => p.dimension === 'topic');
-  const hasProfile = profile.length > 0;
+  const totalNarratives = dimensionWeights.reduce((sum, dw) => sum + dw.total_mentions, 0);
+  const feedbackMature = totalNarratives >= COLD_START_THRESHOLD;
 
   // Score all cases
   const scored: ScoredCase[] = cases.map((c, index) => {
-    if (!hasProfile) {
-      return { ...c, personalization_score: 0, explanations: [] };
+    let feedbackScore = 0;
+    let feedbackExplanations: ScoreExplanation[] = [];
+    let bioScore = 0;
+    let bioExplanation: ScoreExplanation | null = null;
+
+    // Feedback-based scoring
+    if (hasProfile) {
+      const result = scoreCase(c, profile, weights, topicPreferences);
+      feedbackScore = result.score;
+      feedbackExplanations = result.explanations;
     }
 
-    const { score, explanations } = scoreCase(c, profile, weights, topicPreferences);
+    // Bio-based scoring
+    if (hasBio) {
+      const result = computeBioScore(bioText!, c);
+      bioScore = result.score;
+      bioExplanation = result.explanation;
+    }
+
+    // Blend bio and feedback based on maturity
+    let personalScore: number;
+    const allExplanations: ScoreExplanation[] = [...feedbackExplanations];
+
+    if (!feedbackMature) {
+      // Cold start: bio dominates, feedback is minor
+      const bioWeight = hasProfile ? 0.7 : 1.0;
+      const fbWeight = hasProfile ? 0.3 : 0.0;
+      personalScore = (bioScore * bioWeight) + (feedbackScore * fbWeight);
+
+      if (bioExplanation && bioScore > 0) {
+        bioExplanation.weighted_contribution *= bioWeight;
+        allExplanations.push(bioExplanation);
+      }
+    } else {
+      // Mature: feedback dominates, bio provides a floor
+      // Feedback weight grows with more narratives
+      const fbWeight = Math.min(0.8, 0.5 + (totalNarratives - COLD_START_THRESHOLD) * 0.03);
+      const bioWeight = 1.0 - fbWeight;
+      personalScore = (bioScore * bioWeight) + (feedbackScore * fbWeight);
+
+      if (bioExplanation && bioScore > 0) {
+        bioExplanation.weighted_contribution *= bioWeight;
+        allExplanations.push(bioExplanation);
+      }
+    }
 
     return {
       ...c,
-      personalization_score: score,
-      explanations: explanations
+      personalization_score: personalScore,
+      explanations: allExplanations
         .sort((a, b) => Math.abs(b.weighted_contribution) - Math.abs(a.weighted_contribution))
-        .slice(0, 3), // Top 3 explanations
+        .slice(0, 3),
     };
   });
 
-  if (!hasProfile) return scored;
+  // Compute blending of base relevance (position) + personalization
+  const hasAnyPersonalization = scored.some((s) => (s.personalization_score ?? 0) !== 0);
+  if (!hasAnyPersonalization) return scored;
 
-  // Compute blending alpha/beta based on profile maturity
-  const totalMentions = dimensionWeights.reduce((sum, dw) => sum + dw.total_mentions, 0);
-  let alpha = 0.8; // base relevance weight
-  let beta = 0.2;  // personalization weight
+  // Determine alpha/beta (base vs personal)
+  let alpha = 0.7;
+  let beta = 0.3;
 
-  if (totalMentions > 10) { alpha = 0.7; beta = 0.3; }
-  if (totalMentions > 25) { alpha = 0.6; beta = 0.4; }
-  if (totalMentions > 50) { alpha = 0.5; beta = 0.5; }
+  if (feedbackMature) {
+    if (totalNarratives > 10) { alpha = 0.5; beta = 0.5; }
+    if (totalNarratives > 25) { alpha = 0.4; beta = 0.6; }
+    if (totalNarratives > 50) { alpha = 0.3; beta = 0.7; }
+  }
 
-  // Normalize personalization scores to 0-1 range
   const persScores = scored.map((s) => s.personalization_score ?? 0);
   const maxPers = Math.max(...persScores.map(Math.abs), 0.001);
 
   const blended = scored.map((c, index) => {
-    const baseScore = (cases.length - index) / cases.length; // position-based
+    const baseScore = (cases.length - index) / cases.length;
     const normalizedPers = (c.personalization_score ?? 0) / maxPers;
     const finalScore = (baseScore * alpha) + (normalizedPers * beta);
 
@@ -257,9 +370,7 @@ export function rerankWithProfile(
 }
 
 // ============================================
-// LEGACY: Keep old exports for backward compat during transition
-// These are still used by the old user_preferences system
-// and can be removed once Phase 2 is fully deployed
+// LEGACY: Keep old exports for backward compat
 // ============================================
 
 export interface UserPreferenceLegacy {
@@ -270,23 +381,13 @@ export interface UserPreferenceLegacy {
   weight: number;
 }
 
-const LEGACY_FEATURE_KEYS = ['nature_of_suit', 'cause_of_action', 'entity', 'source', 'court_name', 'judge'] as const;
-
 export function extractCaseFeatures(caseData: CaseWithResult): { key: string; value: string }[] {
-  const features: { key: string; value: string }[] = [];
-  for (const key of LEGACY_FEATURE_KEYS) {
-    const value = caseData[key as keyof CaseWithResult];
-    if (typeof value === 'string' && value.trim()) {
-      features.push({ key, value: value.trim() });
-    }
-  }
-  return features;
+  return [];
 }
 
 export function rerankCases(
   cases: CaseWithResult[],
   preferences: UserPreferenceLegacy[]
 ): CaseWithResult[] {
-  // Legacy passthrough — just return cases as-is if called
   return cases;
 }

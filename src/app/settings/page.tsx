@@ -7,7 +7,7 @@ import AppShell from '@/components/AppShell';
 import { GEMINI_MODELS } from '@/lib/types';
 import {
   Settings as SettingsIcon, Key, Cpu, Save, Loader2, CheckCircle,
-  AlertCircle, Eye, EyeOff, Trash2, User, FileText, Upload
+  AlertCircle, Eye, EyeOff, Trash2, User, FileText, Upload, Pencil
 } from 'lucide-react';
 
 export default function SettingsPage() {
@@ -16,6 +16,8 @@ export default function SettingsPage() {
   const [model, setModel] = useState('gemini-2.0-flash');
   const [bioText, setBioText] = useState('');
   const [savedBio, setSavedBio] = useState<string | null>(null);
+  const [bioEditing, setBioEditing] = useState(false);
+  const [bioSaving, setBioSaving] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -24,6 +26,7 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bioTextareaRef = useRef<HTMLTextAreaElement>(null);
   const router = useRouter();
   const supabase = createClient();
 
@@ -48,7 +51,13 @@ export default function SettingsPage() {
         if (data.bio_text) {
           setBioText(data.bio_text);
           setSavedBio(data.bio_text);
+          setBioEditing(false);
+        } else {
+          // No bio yet — start in editing mode
+          setBioEditing(true);
         }
+      } else {
+        setBioEditing(true);
       }
     }
     loadSettings();
@@ -65,20 +74,16 @@ export default function SettingsPage() {
       const fileName = file.name.toLowerCase();
 
       if (fileName.endsWith('.txt') || fileName.endsWith('.md')) {
-        // Plain text files
         const text = await file.text();
         setBioText(text);
+        setBioEditing(true);
       } else if (fileName.endsWith('.docx')) {
-        // For .docx, read as text (basic extraction - strips formatting)
-        // Note: For full docx parsing, you'd need a library like mammoth
-        // This basic approach reads the raw XML content
         const text = await file.text();
-        // Try to extract text content from the XML
         const textContent = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
         if (textContent.length > 50) {
           setBioText(textContent);
+          setBioEditing(true);
         } else {
-          // If basic extraction fails, ask user to paste
           setError('Could not extract text from .docx file. Please copy and paste your bio text directly.');
         }
       } else {
@@ -88,10 +93,56 @@ export default function SettingsPage() {
       setError('Failed to read file. Please try pasting your bio text directly.');
     } finally {
       setUploadingFile(false);
-      // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+    }
+  };
+
+  const handleBioSave = async () => {
+    if (!bioText.trim()) return;
+
+    setBioSaving(true);
+    setError(null);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          bio_text: bioText.trim(),
+          model_preference: model,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to save bio');
+
+      setSavedBio(bioText.trim());
+      setBioEditing(false);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBioSaving(false);
+    }
+  };
+
+  const handleBioEdit = () => {
+    setBioEditing(true);
+    // Focus the textarea after state update
+    setTimeout(() => bioTextareaRef.current?.focus(), 50);
+  };
+
+  const handleBioCancelEdit = () => {
+    if (savedBio) {
+      setBioText(savedBio);
+      setBioEditing(false);
     }
   };
 
@@ -113,7 +164,6 @@ export default function SettingsPage() {
         body: JSON.stringify({
           api_key: apiKey || undefined,
           model_preference: model,
-          bio_text: bioText || null,
         }),
       });
 
@@ -125,7 +175,6 @@ export default function SettingsPage() {
         setMaskedKey(data.masked_key || '****...****');
         setApiKey('');
       }
-      setSavedBio(bioText || null);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -189,59 +238,99 @@ export default function SettingsPage() {
 
         {/* Professional Bio */}
         <div className="card p-6 mb-6">
-          <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
-            <FileText className="w-4 h-4" />
-            Professional Bio
-          </h2>
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2">
+              <FileText className="w-4 h-4" />
+              Professional Bio
+            </h2>
+            {savedBio && !bioEditing && (
+              <button
+                onClick={handleBioEdit}
+                className="btn-ghost text-xs text-themis-500 gap-1.5"
+              >
+                <Pencil className="w-3 h-3" />
+                Edit
+              </button>
+            )}
+          </div>
           <p className="text-xs text-gray-500 mb-4">
-            Your bio is used to match you with relevant cases and provide personalized consultant rankings.
-            Paste your bio below or upload a file.
+            Your bio is used to personalize case rankings based on your expertise and practice areas.
           </p>
 
-          {/* File upload */}
-          <div className="mb-3">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".txt,.md,.docx"
-              onChange={handleFileUpload}
-              className="hidden"
-              id="bio-file-upload"
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploadingFile}
-              className="btn-secondary text-xs gap-2"
-            >
-              {uploadingFile ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <Upload className="w-3 h-3" />
-              )}
-              Upload .txt or .docx
-            </button>
-          </div>
+          {bioEditing ? (
+            <>
+              {/* File upload */}
+              <div className="mb-3">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".txt,.md,.docx"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                  id="bio-file-upload"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploadingFile}
+                  className="btn-secondary text-xs gap-2"
+                >
+                  {uploadingFile ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Upload className="w-3 h-3" />
+                  )}
+                  Upload .txt or .docx
+                </button>
+              </div>
 
-          {/* Bio text area */}
-          <textarea
-            value={bioText}
-            onChange={(e) => setBioText(e.target.value)}
-            placeholder="Paste your professional bio here. Include your practice areas, expertise, notable cases, and background..."
-            className="w-full px-4 py-3 rounded-lg border border-gray-200 bg-white text-sm text-themis-950
-                       placeholder:text-gray-400 resize-vertical
-                       focus:outline-none focus:ring-2 focus:ring-themis-500/20 focus:border-themis-400
-                       transition-all duration-200"
-            rows={6}
-          />
+              {/* Bio text area */}
+              <textarea
+                ref={bioTextareaRef}
+                value={bioText}
+                onChange={(e) => setBioText(e.target.value)}
+                placeholder="Paste your professional bio here. Include your practice areas, expertise, notable cases, and background..."
+                className="w-full px-4 py-3 rounded-lg border border-gray-200 bg-white text-sm text-themis-950
+                           placeholder:text-gray-400 resize-vertical
+                           focus:outline-none focus:ring-2 focus:ring-themis-500/20 focus:border-themis-400
+                           transition-all duration-200"
+                rows={6}
+              />
 
-          {savedBio && bioText === savedBio && (
-            <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-600">
-              <CheckCircle className="w-3 h-3" />
-              Bio saved
+              {/* Save / Cancel buttons */}
+              <div className="flex items-center gap-2 mt-3">
+                <button
+                  onClick={handleBioSave}
+                  disabled={bioSaving || !bioText.trim()}
+                  className="btn-primary text-xs py-2 px-4 gap-2"
+                >
+                  {bioSaving ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Save className="w-3 h-3" />
+                  )}
+                  Save Bio
+                </button>
+                {savedBio && (
+                  <button
+                    onClick={handleBioCancelEdit}
+                    className="btn-ghost text-xs text-gray-500"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </>
+          ) : (
+            /* Saved / locked state */
+            <div className="relative">
+              <div className="w-full px-4 py-3 rounded-lg border border-gray-100 bg-gray-50 text-sm text-gray-500 whitespace-pre-wrap max-h-48 overflow-y-auto">
+                {savedBio}
+              </div>
+              <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-600">
+                <CheckCircle className="w-3 h-3" />
+                Bio saved
+              </div>
             </div>
-          )}
-          {savedBio && bioText !== savedBio && (
-            <p className="text-xs text-amber-600 mt-2">Unsaved changes — click Save below</p>
           )}
         </div>
 
@@ -263,7 +352,6 @@ export default function SettingsPage() {
             </a>
           </p>
 
-          {/* Current key status */}
           {maskedKey && (
             <div className="flex items-center justify-between px-4 py-3 bg-emerald-50/50 border border-emerald-100 rounded-lg mb-4">
               <div className="flex items-center gap-2">
@@ -283,7 +371,6 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* Key input */}
           <div className="relative">
             <Key className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
@@ -354,14 +441,14 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* Save Button */}
+        {/* Save Button (for API key + model) */}
         <button
           onClick={handleSave}
           disabled={saving}
           className="btn-primary gap-2 w-full sm:w-auto"
         >
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          Save Settings
+          Save API Key & Model
         </button>
       </div>
     </AppShell>
