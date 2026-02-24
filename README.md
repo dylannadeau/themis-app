@@ -99,12 +99,10 @@ src/
 
 Data is populated via the offline Jupyter notebook (`Themis.ipynb`):
 
-1. Bloomberg Law API → `docket_db.csv`
+1. Case tracker → `docket_db.csv`
 2. Complaint extraction + Gemini summarization → `cases.csv`
 3. Consultant matching + LLM ranking → `results.csv`
 4. Supabase sync (upsert cases, chunks, consultant_results)
-
-The web application never calls Bloomberg Law directly.
 
 ## Cost
 
