@@ -6,20 +6,19 @@ import { createClient } from '@/lib/supabase-browser';
 import AppShell from '@/components/AppShell';
 import CaseCard from '@/components/CaseCard';
 import FilterPanel, { FilterState, defaultFilters } from '@/components/FilterPanel';
-import { CaseWithResult, UserPreference } from '@/lib/types';
-import { rerankCases } from '@/lib/personalization';
+import { CaseWithResult } from '@/lib/types';
+import { rerankWithProfile, ScoredCase, PreferenceProfileEntry, DimensionWeight } from '@/lib/personalization';
 import { LayoutDashboard, Loader2, AlertCircle, Search } from 'lucide-react';
 import Link from 'next/link';
 
 const SENTINEL_VALUES = ['No complaint found', 'ERROR', 'Failed to fetch pleadings.', ''];
 
 export default function DashboardPage() {
-  const [cases, setCases] = useState<CaseWithResult[]>([]);
+  const [cases, setCases] = useState<ScoredCase[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
   const [availableNatures, setAvailableNatures] = useState<string[]>([]);
-  const [availableConsultants, setAvailableConsultants] = useState<string[]>([]);
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   const router = useRouter();
   const supabase = createClient();
@@ -38,7 +37,7 @@ export default function DashboardPage() {
       // Build query for cases with valid summaries
       let query = supabase
         .from('cases')
-        .select('*, consultant_results(*)')
+        .select('*')
         .not('complaint_summary', 'is', null)
         .neq('complaint_summary', '')
         .neq('complaint_summary', 'No complaint found')
@@ -84,49 +83,37 @@ export default function DashboardPage() {
         (favorites || []).map((f: any) => f.case_id)
       );
 
-      // Merge and filter
+      // Merge
       let merged: CaseWithResult[] = (casesData || []).map((c: any) => ({
         ...c,
-        consultant_results: c.consultant_results?.[0] || null,
         user_reaction: reactionsMap.get(c.id) || null,
         user_favorite: favoritesSet.has(c.id),
       }));
 
       // Client-side filters
-      if (filters.viability.length > 0) {
-        merged = merged.filter(
-          (c) => c.consultant_results?.case_viability && filters.viability.includes(c.consultant_results.case_viability)
-        );
-      }
-      if (filters.minScore) {
-        merged = merged.filter(
-          (c) => c.consultant_results?.score_1 && c.consultant_results.score_1 >= (filters.minScore || 0)
-        );
-      }
-      if (filters.consultant.length > 0) {
-        merged = merged.filter((c) => {
-          const r = c.consultant_results;
-          if (!r) return false;
-          return filters.consultant.some(
-            (name) => r.person_1 === name || r.person_2 === name || r.person_3 === name
-          );
-        });
-      }
       if (filters.favoritesOnly) {
         merged = merged.filter((c) => c.user_favorite);
       }
 
-      // Fetch user preferences and rerank
-      const { data: preferences } = await supabase
-        .from('user_preferences')
-        .select('*')
+      // Fetch new preference profile and dimension weights
+      const { data: profile } = await supabase
+        .from('user_preference_profile')
+        .select('dimension, entity, cumulative_score, mention_count, avg_score')
         .eq('user_id', session.user.id);
 
-      if (preferences && preferences.length > 0) {
-        merged = rerankCases(merged, preferences as UserPreference[]);
-      }
+      const { data: weights } = await supabase
+        .from('user_dimension_weights')
+        .select('dimension, total_mentions, weight')
+        .eq('user_id', session.user.id);
 
-      setCases(merged);
+      // Rerank using new profile-based scoring
+      const reranked = rerankWithProfile(
+        merged,
+        (profile || []) as PreferenceProfileEntry[],
+        (weights || []) as DimensionWeight[]
+      );
+
+      setCases(reranked);
 
       // Check API key status
       const { data: settings } = await supabase
@@ -155,19 +142,6 @@ export default function DashboardPage() {
 
       const uniqueNatures = [...new Set((natures || []).map((n: any) => n.nature_of_suit).filter(Boolean))].sort() as string[];
       setAvailableNatures(uniqueNatures);
-
-      // Get unique consultant names from results
-      const { data: results } = await supabase
-        .from('consultant_results')
-        .select('person_1, person_2, person_3');
-
-      const consultantNames = new Set<string>();
-      (results || []).forEach((r: any) => {
-        if (r.person_1) consultantNames.add(r.person_1);
-        if (r.person_2) consultantNames.add(r.person_2);
-        if (r.person_3) consultantNames.add(r.person_3);
-      });
-      setAvailableConsultants([...consultantNames].sort());
     }
 
     fetchFilterOptions();
@@ -204,14 +178,14 @@ export default function DashboardPage() {
               <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm font-medium text-amber-800">
-                  Add your Gemini API key to enable AI-powered search
+                  Add your Gemini API key to enable AI-powered search and feedback analysis
                 </p>
                 <p className="text-xs text-amber-600 mt-0.5">
                   Go to{' '}
                   <Link href="/settings" className="underline hover:text-amber-800">
                     Settings
                   </Link>{' '}
-                  to configure your API key and model preference.
+                  to configure your API key and professional bio.
                 </p>
               </div>
             </div>
@@ -225,7 +199,6 @@ export default function DashboardPage() {
             filters={filters}
             onChange={setFilters}
             availableNatures={availableNatures}
-            availableConsultants={availableConsultants}
           />
 
           {/* Cases Grid */}

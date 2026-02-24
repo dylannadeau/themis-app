@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
 
     const { data } = await supabase
       .from('user_settings')
-      .select('model_preference, api_key_masked, created_at, updated_at')
+      .select('model_preference, api_key_masked, bio_text, bio_updated_at, created_at, updated_at')
       .eq('user_id', session.user.id)
       .single();
 
@@ -20,6 +20,8 @@ export async function GET(request: NextRequest) {
       has_api_key: !!data?.api_key_masked,
       masked_key: data?.api_key_masked || null,
       model_preference: data?.model_preference || 'gemini-2.0-flash',
+      bio_text: data?.bio_text || null,
+      bio_updated_at: data?.bio_updated_at || null,
     });
   } catch (err: any) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -34,7 +36,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { api_key, model_preference } = await request.json();
+    const { api_key, model_preference, bio_text } = await request.json();
     const userId = session.user.id;
 
     const updateData: any = {
@@ -42,6 +44,12 @@ export async function PUT(request: NextRequest) {
       model_preference: model_preference || 'gemini-2.0-flash',
       updated_at: new Date().toISOString(),
     };
+
+    // Handle bio update
+    if (bio_text !== undefined) {
+      updateData.bio_text = bio_text;
+      updateData.bio_updated_at = new Date().toISOString();
+    }
 
     if (api_key === null) {
       // Explicitly removing key
@@ -92,6 +100,7 @@ export async function PUT(request: NextRequest) {
       success: true,
       masked_key: updateData.api_key_masked ?? undefined,
       model_preference: updateData.model_preference,
+      bio_text: updateData.bio_text ?? undefined,
     });
   } catch (err: any) {
     console.error('Settings error:', err);

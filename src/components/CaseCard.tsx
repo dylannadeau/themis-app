@@ -2,22 +2,15 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { ThumbsUp, ThumbsDown, ExternalLink, User, Calendar, Gavel, Bookmark } from 'lucide-react';
-import { CaseWithResult, Viability } from '@/lib/types';
+import { ThumbsUp, ThumbsDown, ExternalLink, Calendar, Gavel, Bookmark, MessageSquare } from 'lucide-react';
+import { CaseWithResult } from '@/lib/types';
+import { ScoredCase } from '@/lib/personalization';
 import { createClient } from '@/lib/supabase-browser';
-
-function ViabilityBadge({ viability }: { viability: Viability | null }) {
-  if (!viability) return null;
-  const classes = {
-    high: 'badge-high',
-    medium: 'badge-medium',
-    low: 'badge-low',
-  };
-  return <span className={classes[viability]}>{viability}</span>;
-}
+import NarrativeFeedback from './NarrativeFeedback';
+import ExplainabilityTags from './ExplainabilityTags';
 
 interface CaseCardProps {
-  caseData: CaseWithResult;
+  caseData: ScoredCase;
   onReactionChange?: (caseId: string, reaction: 1 | -1 | null) => void;
   onFavoriteChange?: (caseId: string, favorited: boolean) => void;
 }
@@ -29,6 +22,7 @@ export default function CaseCard({ caseData, onReactionChange, onFavoriteChange 
   const [isFavorited, setIsFavorited] = useState(caseData.user_favorite ?? false);
   const [isReacting, setIsReacting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [showNarrative, setShowNarrative] = useState(false);
   const supabase = createClient();
 
   const handleReaction = async (reaction: 1 | -1) => {
@@ -39,7 +33,6 @@ export default function CaseCard({ caseData, onReactionChange, onFavoriteChange 
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      // Call the /api/react route so preference weights get updated
       const response = await fetch('/api/react', {
         method: 'POST',
         headers: {
@@ -87,9 +80,6 @@ export default function CaseCard({ caseData, onReactionChange, onFavoriteChange 
     }
   };
 
-  const result = caseData.consultant_results;
-  const topScore = result?.score_1;
-
   return (
     <div className="card-hover p-5 group">
       <div className="flex items-start justify-between gap-3 mb-3">
@@ -100,14 +90,6 @@ export default function CaseCard({ caseData, onReactionChange, onFavoriteChange 
           >
             {caseData.case_name}
           </Link>
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <ViabilityBadge viability={result?.case_viability ?? null} />
-          {topScore && (
-            <span className="text-xs font-mono font-semibold text-themis-600 bg-themis-50 px-2 py-0.5 rounded">
-              {topScore.toFixed(0)}/10
-            </span>
-          )}
         </div>
       </div>
 
@@ -132,21 +114,22 @@ export default function CaseCard({ caseData, onReactionChange, onFavoriteChange 
 
       {/* Summary snippet */}
       {caseData.complaint_summary && (
-        <p className="text-sm text-gray-600 leading-relaxed line-clamp-3 mb-3">
+        <p className="text-sm text-gray-600 leading-relaxed line-clamp-3 mb-2">
           {caseData.complaint_summary}
         </p>
       )}
 
-      {/* Top consultant match */}
-      {result?.person_1 && (
-        <div className="flex items-center gap-2 mb-3 py-2 px-3 bg-themis-50/50 rounded-lg border border-themis-100/50">
-          <User className="w-3.5 h-3.5 text-themis-500 flex-shrink-0" />
-          <span className="text-xs text-themis-700">
-            <span className="font-semibold">{result.person_1}</span>
-            {result.explanation_1 && (
-              <span className="text-themis-500 ml-1.5">— {result.explanation_1.slice(0, 120)}...</span>
-            )}
-          </span>
+      {/* Explainability tags */}
+      {caseData.explanations && caseData.explanations.length > 0 && (
+        <div className="mb-3">
+          <ExplainabilityTags explanations={caseData.explanations} />
+        </div>
+      )}
+
+      {/* Narrative Feedback (expandable) */}
+      {showNarrative && (
+        <div className="mb-3 p-3 bg-gray-50/50 rounded-lg border border-gray-100 animate-slide-down">
+          <NarrativeFeedback caseId={caseData.id} compact={false} />
         </div>
       )}
 
@@ -176,6 +159,17 @@ export default function CaseCard({ caseData, onReactionChange, onFavoriteChange 
             title="Dislike this case"
           >
             <ThumbsDown className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => setShowNarrative(!showNarrative)}
+            className={`p-2 rounded-lg transition-all duration-200 ${
+              showNarrative
+                ? 'bg-themis-50 text-themis-600 shadow-sm'
+                : 'text-gray-300 hover:text-themis-500 hover:bg-themis-50/50'
+            }`}
+            title="Add detailed feedback"
+          >
+            <MessageSquare className="w-4 h-4" />
           </button>
           <button
             onClick={handleFavorite}

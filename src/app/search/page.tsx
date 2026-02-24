@@ -5,13 +5,13 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase-browser';
 import AppShell from '@/components/AppShell';
 import CaseCard from '@/components/CaseCard';
-import { CaseWithResult } from '@/lib/types';
+import { ScoredCase } from '@/lib/personalization';
 import { Search as SearchIcon, Loader2, Sparkles, AlertCircle, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
 
 export default function SearchPage() {
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<CaseWithResult[]>([]);
+  const [results, setResults] = useState<ScoredCase[]>([]);
   const [synthesis, setSynthesis] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -24,7 +24,6 @@ export default function SearchPage() {
   useEffect(() => {
     inputRef.current?.focus();
 
-    // Check API key
     async function checkKey() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { router.push('/auth'); return; }
@@ -52,7 +51,6 @@ export default function SearchPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { router.push('/auth'); return; }
 
-      // Call search API
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: {
@@ -119,7 +117,6 @@ export default function SearchPage() {
             </div>
           </form>
 
-          {/* Hint text */}
           {!searched && (
             <p className="text-sm text-gray-400 mt-3 ml-1">
               Try: &ldquo;FCRA violations by consumer reporting agencies&rdquo; or &ldquo;patent infringement in semiconductor industry&rdquo;

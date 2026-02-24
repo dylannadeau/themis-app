@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { decrypt } from '@/lib/encryption';
-import { rerankCases } from '@/lib/personalization';
+import { rerankWithProfile, PreferenceProfileEntry, DimensionWeight } from '@/lib/personalization';
 
 const SENTINEL_VALUES = ['No complaint found', 'ERROR', 'Failed to fetch pleadings.', ''];
 
@@ -33,7 +33,6 @@ export async function POST(request: NextRequest) {
 
     if (hfToken) {
       try {
-        // Embed the query using HuggingFace Inference API
         const embeddingResponse = await fetch(
           'https://api-inference.huggingface.co/pipeline/feature-extraction/BAAI/bge-large-en-v1.5',
           {
@@ -49,7 +48,6 @@ export async function POST(request: NextRequest) {
         if (embeddingResponse.ok) {
           const embedding = await embeddingResponse.json();
 
-          // Vector similarity search via Supabase RPC
           const { data: chunks, error: searchError } = await supabase.rpc(
             'match_case_chunks',
             {
@@ -60,7 +58,6 @@ export async function POST(request: NextRequest) {
           );
 
           if (chunks && !searchError) {
-            // Group by case_id, keep best similarity per case
             const caseScores = new Map<string, number>();
             for (const chunk of chunks) {
               const existing = caseScores.get(chunk.case_id) || 0;
@@ -68,7 +65,6 @@ export async function POST(request: NextRequest) {
                 caseScores.set(chunk.case_id, chunk.similarity);
               }
             }
-            // Sort by score descending and take top 10
             matchedCaseIds = [...caseScores.entries()]
               .sort((a, b) => b[1] - a[1])
               .slice(0, 10)
@@ -80,7 +76,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Fallback: text search if vector search returned nothing
+    // Fallback: text search
     if (matchedCaseIds.length === 0) {
       const { data: textResults } = await supabase
         .from('cases')
@@ -100,10 +96,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ cases: [], synthesis: null, query, total_count: 0 });
     }
 
-    // Fetch full case data
+    // Fetch full case data (no longer joining consultant_results)
     const { data: cases } = await supabase
       .from('cases')
-      .select('*, consultant_results(*)')
+      .select('*')
       .in('id', matchedCaseIds);
 
     // Fetch user reactions
@@ -122,7 +118,6 @@ export async function POST(request: NextRequest) {
       .filter((c: any) => !SENTINEL_VALUES.includes(c.complaint_summary || ''))
       .map((c: any) => ({
         ...c,
-        consultant_results: c.consultant_results?.[0] || null,
         user_reaction: reactionsMap.get(c.id) || null,
       }));
 
@@ -130,16 +125,23 @@ export async function POST(request: NextRequest) {
     const idOrder = new Map(matchedCaseIds.map((id, i) => [id, i]));
     merged.sort((a: any, b: any) => (idOrder.get(a.id) ?? 99) - (idOrder.get(b.id) ?? 99));
 
-    // Apply personalization reranking based on user preferences
-    const { data: preferences } = await supabase
-      .from('user_preferences')
-      .select('*')
+    // Fetch preference profile and dimension weights for reranking
+    const { data: profile } = await supabase
+      .from('user_preference_profile')
+      .select('dimension, entity, cumulative_score, mention_count, avg_score')
       .eq('user_id', session.user.id);
 
-    let finalResults = merged;
-    if (preferences && preferences.length > 0) {
-      finalResults = rerankCases(merged, preferences);
-    }
+    const { data: weights } = await supabase
+      .from('user_dimension_weights')
+      .select('dimension, total_mentions, weight')
+      .eq('user_id', session.user.id);
+
+    // Rerank with profile-based scoring
+    const finalResults = rerankWithProfile(
+      merged,
+      (profile || []) as PreferenceProfileEntry[],
+      (weights || []) as DimensionWeight[]
+    );
 
     // Optional: Gemini synthesis
     if (settings?.api_key_encrypted && finalResults.length > 0) {
@@ -176,7 +178,6 @@ export async function POST(request: NextRequest) {
         }
       } catch (err) {
         console.error('Gemini synthesis failed:', err);
-        // Non-fatal — return results without synthesis
       }
     }
 

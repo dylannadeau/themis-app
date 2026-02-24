@@ -1,14 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { Filter, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Filter, ChevronDown, ChevronUp } from 'lucide-react';
 
 export interface FilterState {
-  viability: string[];
-  minScore: number | null;
   natureOfSuit: string[];
   sourceSearch: string;
-  consultant: string[];
   dateRange: { from: string; to: string };
   favoritesOnly: boolean;
 }
@@ -17,15 +14,11 @@ interface FilterPanelProps {
   filters: FilterState;
   onChange: (filters: FilterState) => void;
   availableNatures: string[];
-  availableConsultants: string[];
 }
 
 export const defaultFilters: FilterState = {
-  viability: [],
-  minScore: null,
   natureOfSuit: [],
   sourceSearch: '',
-  consultant: [],
   dateRange: { from: '', to: '' },
   favoritesOnly: false,
 };
@@ -82,23 +75,19 @@ export default function FilterPanel({
   filters,
   onChange,
   availableNatures,
-  availableConsultants,
 }: FilterPanelProps) {
   const [isOpen, setIsOpen] = useState(false);
 
   const activeCount =
-    filters.viability.length +
-    (filters.minScore ? 1 : 0) +
     filters.natureOfSuit.length +
     (filters.sourceSearch ? 1 : 0) +
-    filters.consultant.length +
     (filters.dateRange.from || filters.dateRange.to ? 1 : 0) +
     (filters.favoritesOnly ? 1 : 0);
 
   const clearAll = () => onChange(defaultFilters);
 
   const toggleArrayFilter = (
-    key: 'viability' | 'natureOfSuit' | 'consultant',
+    key: 'natureOfSuit',
     value: string,
     checked: boolean
   ) => {
@@ -150,56 +139,6 @@ export default function FilterPanel({
               onChange={(checked) => onChange({ ...filters, favoritesOnly: checked })}
             />
           </FilterSection>
-
-          {/* Viability */}
-          <FilterSection title="Viability">
-            {['high', 'medium', 'low'].map((v) => (
-              <CheckboxItem
-                key={v}
-                label={v.charAt(0).toUpperCase() + v.slice(1)}
-                checked={filters.viability.includes(v)}
-                onChange={(checked) => toggleArrayFilter('viability', v, checked)}
-              />
-            ))}
-          </FilterSection>
-
-          {/* Min Score */}
-          <FilterSection title="Minimum Score">
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min="1"
-                max="10"
-                value={filters.minScore ?? 1}
-                onChange={(e) =>
-                  onChange({
-                    ...filters,
-                    minScore: parseInt(e.target.value) > 1 ? parseInt(e.target.value) : null,
-                  })
-                }
-                className="flex-1 accent-themis-600"
-              />
-              <span className="text-sm font-mono text-themis-700 w-8 text-center">
-                {filters.minScore ?? '—'}
-              </span>
-            </div>
-          </FilterSection>
-
-          {/* Consultant */}
-          {availableConsultants.length > 0 && (
-            <FilterSection title="Consultant">
-              <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
-                {availableConsultants.map((c) => (
-                  <CheckboxItem
-                    key={c}
-                    label={c}
-                    checked={filters.consultant.includes(c)}
-                    onChange={(checked) => toggleArrayFilter('consultant', c, checked)}
-                  />
-                ))}
-              </div>
-            </FilterSection>
-          )}
 
           {/* Nature of Suit */}
           {availableNatures.length > 0 && (

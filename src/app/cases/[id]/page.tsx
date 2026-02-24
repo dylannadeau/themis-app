@@ -4,12 +4,12 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase-browser';
 import AppShell from '@/components/AppShell';
+import NarrativeFeedback from '@/components/NarrativeFeedback';
 import { CaseWithResult } from '@/lib/types';
 import {
-  ArrowLeft, ThumbsUp, ThumbsDown, ExternalLink, User, Calendar,
+  ArrowLeft, ThumbsUp, ThumbsDown, ExternalLink, Calendar,
   Gavel, FileText, Loader2, MapPin, Scale, Users
 } from 'lucide-react';
-import Link from 'next/link';
 
 function InfoRow({ icon: Icon, label, value }: { icon: any; label: string; value: string | null | undefined }) {
   if (!value) return null;
@@ -19,38 +19,6 @@ function InfoRow({ icon: Icon, label, value }: { icon: any; label: string; value
       <div>
         <p className="text-xs text-gray-500 uppercase tracking-wider">{label}</p>
         <p className="text-sm text-themis-900 mt-0.5">{value}</p>
-      </div>
-    </div>
-  );
-}
-
-function ConsultantCard({
-  rank,
-  name,
-  score,
-  explanation,
-}: {
-  rank: number;
-  name: string | null;
-  score: number | null;
-  explanation: string | null;
-}) {
-  if (!name) return null;
-  return (
-    <div className="flex items-start gap-3 p-3.5 rounded-lg bg-themis-50/50 border border-themis-100/50">
-      <div className="w-7 h-7 rounded-full bg-themis-600 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">
-        {rank}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="font-semibold text-sm text-themis-900">{name}</span>
-          {score && (
-            <span className="text-xs font-mono font-semibold text-themis-600 bg-white px-2 py-0.5 rounded border border-themis-100">
-              {score}/10
-            </span>
-          )}
-        </div>
-        {explanation && <p className="text-xs text-gray-600 leading-relaxed">{explanation}</p>}
       </div>
     </div>
   );
@@ -74,7 +42,7 @@ export default function CaseDetailPage() {
 
       const { data, error } = await supabase
         .from('cases')
-        .select('*, consultant_results(*)')
+        .select('*')
         .eq('id', caseId)
         .single();
 
@@ -92,7 +60,6 @@ export default function CaseDetailPage() {
 
       setCaseData({
         ...data,
-        consultant_results: data.consultant_results?.[0] || null,
         user_reaction: reaction || null,
       });
       setCurrentReaction(reaction?.reaction ?? null);
@@ -140,14 +107,6 @@ export default function CaseDetailPage() {
 
   if (!caseData) return null;
 
-  const result = caseData.consultant_results;
-  const viabilityMap: Record<string, string> = {
-    high: 'badge-high',
-    medium: 'badge-medium',
-    low: 'badge-low',
-  };
-  const viabilityClass = viabilityMap[result?.case_viability || ''] || '';
-
   return (
     <AppShell>
       <div className="page-container max-w-4xl">
@@ -162,20 +121,13 @@ export default function CaseDetailPage() {
 
         {/* Case Header */}
         <div className="card p-6 mb-6">
-          <div className="flex items-start justify-between gap-4 mb-4">
-            <h1 className="font-display text-xl text-themis-900 leading-tight">
-              {caseData.case_name}
-            </h1>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {result?.case_viability && (
-                <span className={viabilityClass}>{result.case_viability}</span>
-              )}
-            </div>
-          </div>
+          <h1 className="font-display text-xl text-themis-900 leading-tight mb-4">
+            {caseData.case_name}
+          </h1>
 
-          {/* Reaction buttons */}
+          {/* Quick reaction buttons */}
           <div className="flex items-center gap-2 mb-4">
-            <span className="text-xs text-gray-500 mr-2">Rate this case:</span>
+            <span className="text-xs text-gray-500 mr-2">Quick rate:</span>
             <button
               onClick={() => handleReaction(1)}
               disabled={isReacting}
@@ -229,27 +181,22 @@ export default function CaseDetailPage() {
           )}
         </div>
 
+        {/* Narrative Feedback */}
+        <div className="card p-6 mb-6">
+          <h2 className="font-display text-lg text-themis-900 mb-4">Your Feedback</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Share your thoughts on this case. Your feedback helps personalize future case rankings
+            by learning which firms, attorneys, practice areas, and other factors matter to you.
+          </p>
+          <NarrativeFeedback caseId={caseId} />
+        </div>
+
         {/* Complaint Summary */}
         {caseData.complaint_summary && (
           <div className="card p-6 mb-6">
             <h2 className="font-display text-lg text-themis-900 mb-4">Complaint Summary</h2>
             <div className="prose prose-sm max-w-none text-gray-700 leading-relaxed whitespace-pre-wrap">
               {caseData.complaint_summary}
-            </div>
-          </div>
-        )}
-
-        {/* Consultant Rankings */}
-        {result && (
-          <div className="card p-6 mb-6">
-            <h2 className="font-display text-lg text-themis-900 mb-2">Consultant Rankings</h2>
-            {result.viability_reasoning && (
-              <p className="text-sm text-gray-600 mb-4 italic">{result.viability_reasoning}</p>
-            )}
-            <div className="space-y-3">
-              <ConsultantCard rank={1} name={result.person_1} score={result.score_1} explanation={result.explanation_1} />
-              <ConsultantCard rank={2} name={result.person_2} score={result.score_2} explanation={result.explanation_2} />
-              <ConsultantCard rank={3} name={result.person_3} score={result.score_3} explanation={result.explanation_3} />
             </div>
           </div>
         )}

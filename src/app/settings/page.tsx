@@ -1,25 +1,29 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase-browser';
 import AppShell from '@/components/AppShell';
 import { GEMINI_MODELS } from '@/lib/types';
 import {
   Settings as SettingsIcon, Key, Cpu, Save, Loader2, CheckCircle,
-  AlertCircle, Eye, EyeOff, Trash2, User
+  AlertCircle, Eye, EyeOff, Trash2, User, FileText, Upload
 } from 'lucide-react';
 
 export default function SettingsPage() {
   const [apiKey, setApiKey] = useState('');
   const [maskedKey, setMaskedKey] = useState<string | null>(null);
   const [model, setModel] = useState('gemini-2.0-flash');
+  const [bioText, setBioText] = useState('');
+  const [savedBio, setSavedBio] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const supabase = createClient();
 
@@ -39,13 +43,57 @@ export default function SettingsPage() {
       if (data) {
         setModel(data.model_preference || 'gemini-2.0-flash');
         if (data.api_key_encrypted) {
-          // Show masked version
           setMaskedKey(data.api_key_masked || '****...****');
+        }
+        if (data.bio_text) {
+          setBioText(data.bio_text);
+          setSavedBio(data.bio_text);
         }
       }
     }
     loadSettings();
   }, [supabase, router]);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingFile(true);
+    setError(null);
+
+    try {
+      const fileName = file.name.toLowerCase();
+
+      if (fileName.endsWith('.txt') || fileName.endsWith('.md')) {
+        // Plain text files
+        const text = await file.text();
+        setBioText(text);
+      } else if (fileName.endsWith('.docx')) {
+        // For .docx, read as text (basic extraction - strips formatting)
+        // Note: For full docx parsing, you'd need a library like mammoth
+        // This basic approach reads the raw XML content
+        const text = await file.text();
+        // Try to extract text content from the XML
+        const textContent = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        if (textContent.length > 50) {
+          setBioText(textContent);
+        } else {
+          // If basic extraction fails, ask user to paste
+          setError('Could not extract text from .docx file. Please copy and paste your bio text directly.');
+        }
+      } else {
+        setError('Supported formats: .txt, .md, .docx');
+      }
+    } catch (err) {
+      setError('Failed to read file. Please try pasting your bio text directly.');
+    } finally {
+      setUploadingFile(false);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -65,6 +113,7 @@ export default function SettingsPage() {
         body: JSON.stringify({
           api_key: apiKey || undefined,
           model_preference: model,
+          bio_text: bioText || null,
         }),
       });
 
@@ -76,6 +125,7 @@ export default function SettingsPage() {
         setMaskedKey(data.masked_key || '****...****');
         setApiKey('');
       }
+      setSavedBio(bioText || null);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -84,7 +134,7 @@ export default function SettingsPage() {
   };
 
   const handleDeleteKey = async () => {
-    if (!confirm('Are you sure you want to remove your API key? AI search will be disabled.')) return;
+    if (!confirm('Are you sure you want to remove your API key? AI search and feedback analysis will be disabled.')) return;
 
     setDeleting(true);
     setError(null);
@@ -137,6 +187,64 @@ export default function SettingsPage() {
           </div>
         </div>
 
+        {/* Professional Bio */}
+        <div className="card p-6 mb-6">
+          <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
+            <FileText className="w-4 h-4" />
+            Professional Bio
+          </h2>
+          <p className="text-xs text-gray-500 mb-4">
+            Your bio is used to match you with relevant cases and provide personalized consultant rankings.
+            Paste your bio below or upload a file.
+          </p>
+
+          {/* File upload */}
+          <div className="mb-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.md,.docx"
+              onChange={handleFileUpload}
+              className="hidden"
+              id="bio-file-upload"
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadingFile}
+              className="btn-secondary text-xs gap-2"
+            >
+              {uploadingFile ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Upload className="w-3 h-3" />
+              )}
+              Upload .txt or .docx
+            </button>
+          </div>
+
+          {/* Bio text area */}
+          <textarea
+            value={bioText}
+            onChange={(e) => setBioText(e.target.value)}
+            placeholder="Paste your professional bio here. Include your practice areas, expertise, notable cases, and background..."
+            className="w-full px-4 py-3 rounded-lg border border-gray-200 bg-white text-sm text-themis-950
+                       placeholder:text-gray-400 resize-vertical
+                       focus:outline-none focus:ring-2 focus:ring-themis-500/20 focus:border-themis-400
+                       transition-all duration-200"
+            rows={6}
+          />
+
+          {savedBio && bioText === savedBio && (
+            <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-600">
+              <CheckCircle className="w-3 h-3" />
+              Bio saved
+            </div>
+          )}
+          {savedBio && bioText !== savedBio && (
+            <p className="text-xs text-amber-600 mt-2">Unsaved changes — click Save below</p>
+          )}
+        </div>
+
         {/* API Key Configuration */}
         <div className="card p-6 mb-6">
           <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
@@ -144,7 +252,7 @@ export default function SettingsPage() {
             Gemini API Key
           </h2>
           <p className="text-xs text-gray-500 mb-5">
-            Your key is encrypted at rest and only used during search requests. Get one free at{' '}
+            Your key is encrypted at rest and used for search synthesis and feedback analysis. Get one free at{' '}
             <a
               href="https://aistudio.google.com/apikey"
               target="_blank"
@@ -202,7 +310,7 @@ export default function SettingsPage() {
             Model Preference
           </h2>
           <p className="text-xs text-gray-500 mb-4">
-            Choose which Gemini model to use for search synthesis. Cost varies by model.
+            Choose which Gemini model to use for search synthesis and feedback analysis. Cost varies by model.
           </p>
 
           <div className="space-y-2">
