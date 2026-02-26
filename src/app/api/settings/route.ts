@@ -58,18 +58,11 @@ export async function PUT(request: NextRequest) {
     } else if (api_key && typeof api_key === 'string' && api_key.trim()) {
       const trimmedKey = api_key.trim();
 
-      // Validate key by calling Gemini
+      // Validate key by listing models (doesn't consume generation quota)
       try {
         const testResponse = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${trimmedKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: 'Say "ok"' }] }],
-              generationConfig: { maxOutputTokens: 5 },
-            }),
-          }
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${trimmedKey}`,
+          { method: 'GET', headers: { 'Content-Type': 'application/json' } }
         );
 
         if (!testResponse.ok) {
