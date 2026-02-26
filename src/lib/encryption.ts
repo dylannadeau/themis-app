@@ -6,8 +6,16 @@ const TAG_LENGTH = 16;
 
 function getEncryptionKey(): Buffer {
   const secret = process.env.API_KEY_ENCRYPTION_SECRET;
-  if (!secret) throw new Error('API_KEY_ENCRYPTION_SECRET not configured');
-  return Buffer.from(secret, 'hex');
+  if (secret) return Buffer.from(secret, 'hex');
+
+  // Derive a key from the Supabase anon key so encryption works without extra config
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!anonKey) {
+    throw new Error(
+      'Neither API_KEY_ENCRYPTION_SECRET nor NEXT_PUBLIC_SUPABASE_ANON_KEY is configured'
+    );
+  }
+  return crypto.createHash('sha256').update(anonKey).digest();
 }
 
 export function encrypt(plaintext: string): string {
