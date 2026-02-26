@@ -78,13 +78,18 @@ export default function SettingsPage() {
         setBioText(text);
         setBioEditing(true);
       } else if (fileName.endsWith('.docx')) {
-        const text = await file.text();
-        const textContent = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-        if (textContent.length > 50) {
-          setBioText(textContent);
-          setBioEditing(true);
-        } else {
-          setError('Could not extract text from .docx file. Please copy and paste your bio text directly.');
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          const mammoth = await import('mammoth');
+          const result = await mammoth.extractRawText({ arrayBuffer });
+          if (result.value && result.value.trim().length > 50) {
+            setBioText(result.value.trim());
+            setBioEditing(true);
+          } else {
+            setError('Could not extract text from .docx file. Please copy and paste your bio text directly.');
+          }
+        } catch {
+          setError('Failed to parse .docx file. Please copy and paste your bio text directly.');
         }
       } else {
         setError('Supported formats: .txt, .md, .docx');
