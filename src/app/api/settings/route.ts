@@ -79,7 +79,15 @@ export async function PUT(request: NextRequest) {
         );
       }
 
-      updateData.api_key_encrypted = encrypt(trimmedKey);
+      try {
+        updateData.api_key_encrypted = encrypt(trimmedKey);
+      } catch (encErr: any) {
+        console.error('Encryption error:', encErr);
+        return NextResponse.json(
+          { error: 'Server configuration error: encryption key is missing or invalid.' },
+          { status: 500 }
+        );
+      }
       updateData.api_key_masked = maskApiKey(trimmedKey);
     }
 
@@ -87,7 +95,13 @@ export async function PUT(request: NextRequest) {
       .from('user_settings')
       .upsert(updateData, { onConflict: 'user_id' });
 
-    if (error) throw error;
+    if (error) {
+      console.error('Database error:', error);
+      return NextResponse.json(
+        { error: `Failed to save settings: ${error.message}` },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       success: true,
