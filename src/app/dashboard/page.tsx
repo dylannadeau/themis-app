@@ -8,6 +8,7 @@ import CaseCard from '@/components/CaseCard';
 import FilterPanel, { FilterState, defaultFilters } from '@/components/FilterPanel';
 import { CaseWithResult } from '@/lib/types';
 import { rerankWithProfile, ScoredCase, PreferenceProfileEntry, DimensionWeight } from '@/lib/personalization';
+import NewUserSetupModal from '@/components/NewUserSetupModal';
 import { LayoutDashboard, Loader2, AlertCircle, Search } from 'lucide-react';
 import Link from 'next/link';
 
@@ -19,6 +20,8 @@ export default function DashboardPage() {
   const [availableNatures, setAvailableNatures] = useState<string[]>([]);
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   const [hasBio, setHasBio] = useState<boolean | null>(null);
+  const [showSetupModal, setShowSetupModal] = useState(false);
+  const [setupDismissed, setSetupDismissed] = useState(false);
   const router = useRouter();
   const supabase = createClient();
 
@@ -110,8 +113,15 @@ export default function DashboardPage() {
       ]);
 
       const bioText = settingsResult.data?.bio_text || null;
-      setHasApiKey(!!settingsResult.data?.api_key_encrypted);
-      setHasBio(!!bioText);
+      const userHasApiKey = !!settingsResult.data?.api_key_encrypted;
+      const userHasBio = !!bioText;
+      setHasApiKey(userHasApiKey);
+      setHasBio(userHasBio);
+
+      // Show setup modal for new users who have neither API key nor bio
+      if (!userHasApiKey && !userHasBio && !setupDismissed) {
+        setShowSetupModal(true);
+      }
 
       // Rerank using profile + bio
       const reranked = rerankWithProfile(
@@ -128,7 +138,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [filters, router, supabase]);
+  }, [filters, router, supabase, setupDismissed]);
 
   useEffect(() => {
     async function fetchFilterOptions() {
@@ -150,8 +160,17 @@ export default function DashboardPage() {
     fetchCases();
   }, [fetchCases]);
 
+  const handleSetupComplete = () => {
+    setShowSetupModal(false);
+    setSetupDismissed(true);
+    fetchCases();
+  };
+
   return (
     <AppShell>
+      {showSetupModal && (
+        <NewUserSetupModal onComplete={handleSetupComplete} />
+      )}
       <div className="page-container">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
