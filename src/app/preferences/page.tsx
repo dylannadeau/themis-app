@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase-browser';
 import AppShell from '@/components/AppShell';
 import {
   UserCircle, Loader2, AlertCircle, BarChart3, MessageSquare,
   ThumbsUp, ThumbsDown, Minus, ArrowRight, Sparkles,
+  Trash2, ChevronUp, ChevronDown, Check, X,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -101,26 +102,30 @@ export default function PreferencesPage() {
   const [narrativeCount, setNarrativeCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editingScore, setEditingScore] = useState(0);
+  const [mutating, setMutating] = useState<string | null>(null);
   const router = useRouter();
   const supabase = createClient();
 
+  const refreshData = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { router.push('/auth'); return; }
+
+    const response = await fetch('/api/preferences', {
+      headers: { 'Authorization': `Bearer ${session.access_token}` },
+    });
+    if (!response.ok) throw new Error('Failed to load preferences');
+    const data = await response.json();
+    setProfile(data.profile);
+    setDimensionWeights(data.dimension_weights);
+    setNarrativeCount(data.narrative_count);
+  }, [supabase, router]);
+
   useEffect(() => {
     async function loadPreferences() {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        router.push('/auth');
-        return;
-      }
-
       try {
-        const response = await fetch('/api/preferences', {
-          headers: { 'Authorization': `Bearer ${session.access_token}` },
-        });
-        if (!response.ok) throw new Error('Failed to load preferences');
-        const data = await response.json();
-        setProfile(data.profile);
-        setDimensionWeights(data.dimension_weights);
-        setNarrativeCount(data.narrative_count);
+        await refreshData();
       } catch (err: any) {
         setError(err.message);
       } finally {
@@ -128,7 +133,76 @@ export default function PreferencesPage() {
       }
     }
     loadPreferences();
-  }, [supabase, router]);
+  }, [refreshData]);
+
+  const entityKey = (dim: string, entity: string) => `${dim}::${entity}`;
+
+  const handleDelete = async (entry: ProfileEntry) => {
+    if (!window.confirm(`Remove "${entry.entity}" from your ${DIMENSION_LABELS[entry.dimension] || entry.dimension} preferences?`)) return;
+
+    const key = entityKey(entry.dimension, entry.entity);
+    setMutating(key);
+    setError(null);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const response = await fetch('/api/preferences', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ dimension: entry.dimension, entity: entry.entity }),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to delete');
+      }
+      await refreshData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setMutating(null);
+    }
+  };
+
+  const handleScoreSave = async (entry: ProfileEntry) => {
+    const key = entityKey(entry.dimension, entry.entity);
+    const rounded = Math.round(editingScore * 10) / 10;
+    if (rounded === Math.round(entry.avg_score * 10) / 10) {
+      setEditingKey(null);
+      return;
+    }
+
+    setMutating(key);
+    setError(null);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const response = await fetch('/api/preferences', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ dimension: entry.dimension, entity: entry.entity, avg_score: rounded }),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to update score');
+      }
+      setEditingKey(null);
+      await refreshData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setMutating(null);
+    }
+  };
 
   // Group profile entries by dimension
   const profileByDimension: Record<string, ProfileEntry[]> = {};
@@ -172,7 +246,7 @@ export default function PreferencesPage() {
           Preference Profile
         </h1>
         <p className="text-sm text-gray-500 mb-8">
-          A read-only view of what Themis has learned from your feedback.
+          What Themis has learned from your feedback. Click a score to adjust it, or remove entities you no longer want.
         </p>
 
         {loading && (
@@ -334,25 +408,89 @@ export default function PreferencesPage() {
                             </span>
                           </div>
                           <div className="space-y-2">
-                            {entries.map((entry, i) => (
-                              <div
-                                key={`${dim}-${entry.entity}-${i}`}
-                                className="flex items-center justify-between gap-3 py-2 px-3 rounded-lg bg-gray-50/80 hover:bg-gray-50 transition-colors"
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <SentimentIcon score={entry.avg_score} />
-                                  <span className="text-sm text-themis-900 truncate">
-                                    {entry.entity}
-                                  </span>
+                            {entries.map((entry, i) => {
+                              const key = entityKey(entry.dimension, entry.entity);
+                              const isEditing = editingKey === key;
+                              const isMutating = mutating === key;
+
+                              return (
+                                <div
+                                  key={`${dim}-${entry.entity}-${i}`}
+                                  className="group flex items-center justify-between gap-3 py-2 px-3 rounded-lg bg-gray-50/80 hover:bg-gray-50 transition-colors"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <SentimentIcon score={isEditing ? editingScore : entry.avg_score} />
+                                    <span className="text-sm text-themis-900 truncate">
+                                      {entry.entity}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <span className="text-xs text-gray-400 whitespace-nowrap">
+                                      {entry.mention_count}x
+                                    </span>
+
+                                    {isEditing ? (
+                                      <div className="flex items-center gap-1.5">
+                                        <button
+                                          onClick={() => setEditingScore(prev => Math.round(Math.max(-1, prev - 0.1) * 10) / 10)}
+                                          className="p-0.5 rounded hover:bg-gray-200 text-gray-500 transition-colors"
+                                        >
+                                          <ChevronDown className="w-3.5 h-3.5" />
+                                        </button>
+                                        <span className={`text-xs font-mono w-10 text-center ${
+                                          editingScore > 0.05 ? 'text-emerald-600' : editingScore < -0.05 ? 'text-red-600' : 'text-gray-500'
+                                        }`}>
+                                          {editingScore > 0 ? '+' : ''}{editingScore.toFixed(1)}
+                                        </span>
+                                        <button
+                                          onClick={() => setEditingScore(prev => Math.round(Math.min(1, prev + 0.1) * 10) / 10)}
+                                          className="p-0.5 rounded hover:bg-gray-200 text-gray-500 transition-colors"
+                                        >
+                                          <ChevronUp className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                          onClick={() => handleScoreSave(entry)}
+                                          disabled={isMutating}
+                                          className="p-1 rounded hover:bg-emerald-100 text-emerald-600 transition-colors"
+                                        >
+                                          {isMutating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                                        </button>
+                                        <button
+                                          onClick={() => setEditingKey(null)}
+                                          className="p-1 rounded hover:bg-gray-200 text-gray-400 transition-colors"
+                                        >
+                                          <X className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        onClick={() => {
+                                          setEditingKey(key);
+                                          setEditingScore(Math.round(entry.avg_score * 10) / 10);
+                                        }}
+                                        className="cursor-pointer hover:bg-gray-100 rounded px-1 -mx-1 transition-colors"
+                                        title="Click to adjust score"
+                                      >
+                                        <ScoreBar score={entry.avg_score} />
+                                      </button>
+                                    )}
+
+                                    <button
+                                      onClick={() => handleDelete(entry)}
+                                      disabled={isMutating}
+                                      className="p-1 rounded text-gray-300 opacity-0 group-hover:opacity-100 hover:text-red-500 hover:bg-red-50 transition-all"
+                                      title="Remove entity"
+                                    >
+                                      {isMutating && mutating === key && !isEditing ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      ) : (
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      )}
+                                    </button>
+                                  </div>
                                 </div>
-                                <div className="flex items-center gap-4">
-                                  <span className="text-xs text-gray-400 whitespace-nowrap">
-                                    {entry.mention_count}x
-                                  </span>
-                                  <ScoreBar score={entry.avg_score} />
-                                </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       );
