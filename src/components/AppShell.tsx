@@ -12,11 +12,13 @@ import {
   Scale,
   Menu,
   X,
+  UserCircle,
 } from 'lucide-react';
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/search', label: 'Search', icon: Search },
+  { href: '/preferences', label: 'Preferences', icon: UserCircle },
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
