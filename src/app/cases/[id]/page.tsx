@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase-browser';
 import AppShell from '@/components/AppShell';
@@ -31,7 +31,20 @@ interface ScoreData {
   stale: boolean;
 }
 
-function ScoreBadgeLarge({ scoreData }: { scoreData: ScoreData | null }) {
+function ScoreBadgeLarge({ scoreData, loading }: { scoreData: ScoreData | null; loading?: boolean }) {
+  if (loading) {
+    return (
+      <div className="flex items-center gap-3">
+        <span className="min-w-[3rem] h-9 flex items-center justify-center rounded-xl bg-gray-100 border border-gray-200/60 animate-pulse">
+          <Loader2 className="w-4 h-4 text-gray-300 animate-spin" />
+        </span>
+        <div className="text-xs text-gray-400">
+          <p className="font-medium">Scoring...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!scoreData) return null;
 
   const { score, source, stale, reasoning } = scoreData;
@@ -48,7 +61,7 @@ function ScoreBadgeLarge({ scoreData }: { scoreData: ScoreData | null }) {
   const display = source === 'cluster' ? `~${score}` : `${score}`;
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-3 animate-fade-in">
       <span
         className={`min-w-[3rem] h-9 flex items-center justify-center rounded-xl text-base font-bold ${colorClasses} ${stale ? 'opacity-60' : ''}`}
         title={reasoning || `Relevance score: ${score}/10`}
@@ -98,6 +111,46 @@ export default function CaseDetailPage() {
   const [currentReaction, setCurrentReaction] = useState<1 | -1 | null>(null);
   const [isReacting, setIsReacting] = useState(false);
   const [scoreData, setScoreData] = useState<ScoreData | null>(null);
+  const [scoreLoading, setScoreLoading] = useState(false);
+  const [viabilityData, setViabilityData] = useState<{ case_viability: string | null; viability_reasoning: string | null }>({ case_viability: null, viability_reasoning: null });
+  const autoScoreTriggered = useRef(false);
+
+  const triggerAutoScore = useCallback(async () => {
+    if (autoScoreTriggered.current) return;
+    autoScoreTriggered.current = true;
+
+    setScoreLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const response = await fetch('/api/score-cases', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ mode: 'direct', case_ids: [caseId] }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        if (result.scores && result.scores.length > 0) {
+          const s = result.scores[0];
+          setScoreData({
+            score: s.score,
+            reasoning: s.reasoning,
+            source: 'direct',
+            stale: false,
+          });
+        }
+      }
+    } catch {
+      // Silently fail — auto-scoring is best-effort
+    } finally {
+      setScoreLoading(false);
+    }
+  }, [caseId, supabase]);
 
   useEffect(() => {
     async function fetchCase() {
@@ -115,7 +168,7 @@ export default function CaseDetailPage() {
         return;
       }
 
-      const [reactionResult, scoreResult] = await Promise.all([
+      const [reactionResult, scoreResult, viabilityResult] = await Promise.all([
         supabase
           .from('user_reactions')
           .select('*')
@@ -128,6 +181,11 @@ export default function CaseDetailPage() {
           .eq('user_id', session.user.id)
           .eq('case_id', caseId)
           .single(),
+        supabase
+          .from('consultant_results')
+          .select('case_viability, viability_reasoning')
+          .eq('case_id', caseId)
+          .single(),
       ]);
 
       setCaseData({
@@ -135,12 +193,25 @@ export default function CaseDetailPage() {
         user_reaction: reactionResult.data || null,
       });
       setCurrentReaction(reactionResult.data?.reaction ?? null);
-      setScoreData(scoreResult.data || null);
+
+      const fetchedScore = scoreResult.data || null;
+      setScoreData(fetchedScore);
+
+      setViabilityData({
+        case_viability: viabilityResult.data?.case_viability ?? null,
+        viability_reasoning: viabilityResult.data?.viability_reasoning ?? null,
+      });
+
       setLoading(false);
+
+      // Auto-score if no score or stale
+      if (!fetchedScore || fetchedScore.stale) {
+        triggerAutoScore();
+      }
     }
 
     fetchCase();
-  }, [caseId, router, supabase]);
+  }, [caseId, router, supabase, triggerAutoScore]);
 
   const handleReaction = async (reaction: 1 | -1) => {
     setIsReacting(true);
@@ -198,9 +269,7 @@ export default function CaseDetailPage() {
             <h1 className="font-display text-xl text-themis-900 leading-tight">
               {caseData.case_name}
             </h1>
-            {scoreData && (
-              <ScoreBadgeLarge scoreData={scoreData} />
-            )}
+            <ScoreBadgeLarge scoreData={scoreData} loading={scoreLoading} />
           </div>
 
           {/* Quick reaction buttons */}
@@ -243,8 +312,8 @@ export default function CaseDetailPage() {
             <InfoRow icon={MapPin} label="Entity" value={caseData.entity} />
             <InfoRow icon={FileText} label="Demand" value={caseData.demand} />
             <ViabilityRow
-              viability={(caseData as any).case_viability ?? null}
-              reasoning={(caseData as any).viability_reasoning ?? null}
+              viability={viabilityData.case_viability}
+              reasoning={viabilityData.viability_reasoning}
             />
           </div>
 

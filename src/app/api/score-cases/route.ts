@@ -40,9 +40,16 @@ interface ProfileEntry {
   mention_count: number;
 }
 
+interface NarrativeEntry {
+  case_id: string;
+  case_name: string | null;
+  narrative: string;
+}
+
 function buildScoringPrompt(
   bioText: string,
   profileEntries: ProfileEntry[],
+  narratives: NarrativeEntry[],
   cases: CaseData[]
 ): string {
   const profileSection =
@@ -54,6 +61,17 @@ function buildScoringPrompt(
           )
           .join('\n')
       : 'No feedback history yet.';
+
+  const narrativeSection =
+    narratives.length > 0
+      ? narratives
+          .map((n) => {
+            const name = n.case_name || 'Unknown case';
+            const text = n.narrative.length > 200 ? n.narrative.slice(0, 200) + '...' : n.narrative;
+            return `- Re: ${name}: ${text}`;
+          })
+          .join('\n')
+      : 'No narrative feedback yet.';
 
   const casesSection = cases
     .map((c, i) => {
@@ -77,7 +95,12 @@ ${bioText}
 User's Demonstrated Preferences:
 ${profileSection}
 
+User's Own Words (recent case feedback — pay close attention to what they find interesting):
+${narrativeSection}
+
 Score each case from 1 to 10 based ONLY on expertise and interest alignment — how well this case matches what this professional knows and cares about. Do NOT factor in commercial viability (that is scored separately).
+
+The user's own words above are especially valuable — if they mention specific topics, legal theories, industries, or types of disputes they find interesting, weight those heavily.
 
 - 8-10: Strong expertise match — case directly aligns with professional's domain knowledge, practice areas, or demonstrated interests
 - 5-7: Partial match — some overlap with professional's background or adjacent to their expertise
@@ -168,6 +191,32 @@ async function getUserProfile(supabase: ReturnType<typeof createServerSupabaseCl
   return (data || []) as ProfileEntry[];
 }
 
+async function getUserNarratives(supabase: ReturnType<typeof createServerSupabaseClient>, userId: string): Promise<NarrativeEntry[]> {
+  const { data: narratives } = await supabase
+    .from('user_narratives')
+    .select('case_id, narrative')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(10);
+
+  if (!narratives || narratives.length === 0) return [];
+
+  // Fetch case names for context
+  const caseIds = narratives.map((n: { case_id: string }) => n.case_id);
+  const { data: cases } = await supabase
+    .from('cases')
+    .select('id, case_name')
+    .in('id', caseIds);
+
+  const nameMap = new Map((cases || []).map((c: { id: string; case_name: string | null }) => [c.id, c.case_name]));
+
+  return narratives.map((n: { case_id: string; narrative: string }) => ({
+    case_id: n.case_id,
+    case_name: nameMap.get(n.case_id) || null,
+    narrative: n.narrative,
+  }));
+}
+
 export async function POST(request: NextRequest) {
   try {
     const supabase = createServerSupabaseClient();
@@ -220,10 +269,13 @@ export async function POST(request: NextRequest) {
 
     const model = settings.model_preference || DEFAULT_MODEL;
     const bioText = settings.bio_text;
-    const profileEntries = await getUserProfile(supabase, userId);
+    const [profileEntries, narratives] = await Promise.all([
+      getUserProfile(supabase, userId),
+      getUserNarratives(supabase, userId),
+    ]);
 
     if (mode === 'cluster') {
-      return handleClusterScoring(supabase, userId, apiKey, model, bioText, profileEntries);
+      return handleClusterScoring(supabase, userId, apiKey, model, bioText, profileEntries, narratives);
     } else {
       return handleDirectScoring(
         supabase,
@@ -232,6 +284,7 @@ export async function POST(request: NextRequest) {
         model,
         bioText,
         profileEntries,
+        narratives,
         case_ids
       );
     }
@@ -247,7 +300,8 @@ async function handleClusterScoring(
   apiKey: string,
   model: string,
   bioText: string,
-  profileEntries: ProfileEntry[]
+  profileEntries: ProfileEntry[],
+  narratives: NarrativeEntry[]
 ) {
   // Step 2: Fetch cluster representatives
   const { data: representatives, error: repError } = await supabase
@@ -315,7 +369,7 @@ async function handleClusterScoring(
 
   for (let i = 0; i < casesData.length; i += BATCH_SIZE) {
     const batch = casesData.slice(i, i + BATCH_SIZE) as CaseData[];
-    const prompt = buildScoringPrompt(bioText, profileEntries, batch);
+    const prompt = buildScoringPrompt(bioText, profileEntries, narratives, batch);
 
     let scores = await callGeminiAndParse(prompt, apiKey, model);
 
@@ -471,6 +525,7 @@ async function handleDirectScoring(
   model: string,
   bioText: string,
   profileEntries: ProfileEntry[],
+  narratives: NarrativeEntry[],
   caseIds?: string[]
 ) {
   if (!caseIds || !Array.isArray(caseIds) || caseIds.length === 0) {
@@ -505,7 +560,7 @@ async function handleDirectScoring(
 
   // Score one case per Gemini call for precision
   for (const caseItem of casesData as CaseData[]) {
-    const prompt = buildScoringPrompt(bioText, profileEntries, [caseItem]);
+    const prompt = buildScoringPrompt(bioText, profileEntries, narratives, [caseItem]);
     let scores = await callGeminiAndParse(prompt, apiKey, model);
 
     // Retry once on failure

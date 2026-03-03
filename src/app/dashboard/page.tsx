@@ -1,17 +1,18 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase-browser';
 import AppShell from '@/components/AppShell';
 import CaseCard from '@/components/CaseCard';
 import FilterPanel, { FilterState, defaultFilters } from '@/components/FilterPanel';
 import InteractionTabs, { InteractionTab } from '@/components/InteractionTabs';
+import ScoreCasesModal, { ScoringOptions, CaseStats } from '@/components/ScoreCasesModal';
 import { CaseWithResult } from '@/lib/types';
 import { rerankWithProfile, ScoredCase, PreferenceProfileEntry, DimensionWeight } from '@/lib/personalization';
 import NewUserSetupModal from '@/components/NewUserSetupModal';
 import { useToast, ToastContainer } from '@/components/Toast';
-import { LayoutDashboard, Loader2, AlertCircle, Search, RefreshCw, Sparkles } from 'lucide-react';
+import { LayoutDashboard, Loader2, AlertCircle, Search, RefreshCw, Sparkles, X } from 'lucide-react';
 import Link from 'next/link';
 
 interface ScoreData {
@@ -20,6 +21,22 @@ interface ScoreData {
   reasoning: string | null;
   source: string;
   stale: boolean;
+}
+
+interface ViabilityData {
+  case_id: string;
+  case_viability: 'high' | 'medium' | 'low' | null;
+  viability_reasoning: string | null;
+}
+
+const PAGE_SIZE = 1000;
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
 }
 
 export default function DashboardPage() {
@@ -34,11 +51,17 @@ export default function DashboardPage() {
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [setupDismissed, setSetupDismissed] = useState(false);
   const [scoresMap, setScoresMap] = useState<Map<string, ScoreData>>(new Map());
-  const [isScoring, setIsScoring] = useState(false);
-  const [scoringMessage, setScoringMessage] = useState<string | null>(null);
+  const [viabilityMap, setViabilityMap] = useState<Map<string, ViabilityData>>(new Map());
   const [showRefreshBanner, setShowRefreshBanner] = useState(false);
   const [activeTab, setActiveTab] = useState<InteractionTab>('new');
   const [removingCaseIds, setRemovingCaseIds] = useState<Set<string>>(new Set());
+  const [showScoringModal, setShowScoringModal] = useState(false);
+  const [scoringProgress, setScoringProgress] = useState<{
+    active: boolean;
+    completed: number;
+    total: number;
+  } | null>(null);
+  const scoringCancelledRef = useRef(false);
 
   // Interaction sets — refs for mutation without re-render, state mirror for counts
   const likedIdsRef = useRef<Set<string>>(new Set());
@@ -64,6 +87,18 @@ export default function DashboardPage() {
     return map;
   }, [supabase]);
 
+  const fetchViability = useCallback(async () => {
+    const { data } = await supabase
+      .from('consultant_results')
+      .select('case_id, case_viability, viability_reasoning');
+
+    const map = new Map(
+      (data || []).map((v: ViabilityData) => [v.case_id, v])
+    );
+    setViabilityMap(map);
+    return map;
+  }, [supabase]);
+
   const recalcCounts = useCallback((allCasesArr: ScoredCase[]) => {
     setCounts({
       new: allCasesArr.filter((c) => !interactedIdsRef.current.has(c.id)).length,
@@ -84,6 +119,23 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // Sort cases: scored cases first (by score desc), then unscored by filed date desc
+  const sortCases = useCallback((casesArr: ScoredCase[], scores: Map<string, ScoreData>): ScoredCase[] => {
+    return [...casesArr].sort((a, b) => {
+      const scoreA = scores.get(a.id);
+      const scoreB = scores.get(b.id);
+      // Both scored: sort by score desc
+      if (scoreA && scoreB) return scoreB.score - scoreA.score;
+      // Only one scored: scored first
+      if (scoreA && !scoreB) return -1;
+      if (!scoreA && scoreB) return 1;
+      // Neither scored: sort by filed date desc
+      const dateA = a.filed ? new Date(a.filed).getTime() : 0;
+      const dateB = b.filed ? new Date(b.filed).getTime() : 0;
+      return dateB - dateA;
+    });
+  }, []);
+
   const fetchCases = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -95,36 +147,51 @@ export default function DashboardPage() {
         return;
       }
 
-      // Build query for cases with valid summaries
-      let query = supabase
-        .from('cases')
-        .select('*')
-        .not('complaint_summary', 'is', null)
-        .neq('complaint_summary', '')
-        .neq('complaint_summary', 'No complaint found')
-        .neq('complaint_summary', 'ERROR')
-        .neq('complaint_summary', 'Failed to fetch pleadings.')
-        .order('filed', { ascending: false })
-        .limit(100);
+      // Paginated fetch: get all valid cases
+      let allCasesData: any[] = [];
+      let from = 0;
+      let hasMore = true;
 
-      if (filters.dateRange.from) {
-        query = query.gte('filed', filters.dateRange.from);
-      }
-      if (filters.dateRange.to) {
-        query = query.lte('filed', filters.dateRange.to);
-      }
-      if (filters.sourceSearch.trim()) {
-        query = query.ilike('source', `%${filters.sourceSearch.trim()}%`);
-      }
-      if (filters.natureOfSuit.length > 0) {
-        query = query.in('nature_of_suit', filters.natureOfSuit);
+      while (hasMore) {
+        let query = supabase
+          .from('cases')
+          .select('*')
+          .not('complaint_summary', 'is', null)
+          .neq('complaint_summary', '')
+          .neq('complaint_summary', 'No complaint found')
+          .neq('complaint_summary', 'ERROR')
+          .neq('complaint_summary', 'Failed to fetch pleadings.')
+          .order('filed', { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+
+        if (filters.dateRange.from) {
+          query = query.gte('filed', filters.dateRange.from);
+        }
+        if (filters.dateRange.to) {
+          query = query.lte('filed', filters.dateRange.to);
+        }
+        if (filters.sourceSearch.trim()) {
+          query = query.ilike('source', `%${filters.sourceSearch.trim()}%`);
+        }
+        if (filters.natureOfSuit.length > 0) {
+          query = query.in('nature_of_suit', filters.natureOfSuit);
+        }
+
+        const { data: casesData, error: casesError } = await query;
+        if (casesError) throw casesError;
+
+        const batch = casesData || [];
+        allCasesData = allCasesData.concat(batch);
+
+        if (batch.length < PAGE_SIZE) {
+          hasMore = false;
+        } else {
+          from += PAGE_SIZE;
+        }
       }
 
-      const { data: casesData, error: casesError } = await query;
-      if (casesError) throw casesError;
-
-      // Fetch user reactions, favorites, narratives, and profile in parallel
-      const [reactionsResult, favoritesResult, narrativesResult, profileResult, weightsResult, settingsResult] = await Promise.all([
+      // Fetch user data, scores, and viability in parallel
+      const [reactionsResult, favoritesResult, narrativesResult, profileResult, weightsResult, settingsResult, scoresResult, viabilityResult] = await Promise.all([
         supabase
           .from('user_reactions')
           .select('*')
@@ -150,10 +217,9 @@ export default function DashboardPage() {
           .select('api_key_encrypted, bio_text')
           .eq('user_id', session.user.id)
           .single(),
+        fetchScores(session.user.id),
+        fetchViability(),
       ]);
-
-      // Fetch scores
-      await fetchScores(session.user.id);
 
       const reactions = reactionsResult.data || [];
       const reactionsMap = new Map(
@@ -174,8 +240,8 @@ export default function DashboardPage() {
       reviewedIdsRef.current = reviewed;
       interactedIdsRef.current = interacted;
 
-      // Merge
-      let merged: CaseWithResult[] = (casesData || []).map((c: any) => ({
+      // Merge cases with reactions and favorites
+      let merged: CaseWithResult[] = allCasesData.map((c: any) => ({
         ...c,
         user_reaction: reactionsMap.get(c.id) || null,
         user_favorite: favoritesSet.has(c.id),
@@ -191,7 +257,6 @@ export default function DashboardPage() {
       setHasApiKey(userHasApiKey);
       setHasBio(userHasBio);
 
-      // Show setup modal for new users who have neither API key nor bio
       if (!userHasApiKey && !userHasBio && !setupDismissed) {
         setShowSetupModal(true);
       }
@@ -204,9 +269,12 @@ export default function DashboardPage() {
         bioText
       );
 
-      setAllCases(reranked);
-      setCases(filterByTab(reranked, activeTab));
-      recalcCounts(reranked);
+      // Sort: scores first, then filed date
+      const sorted = sortCases(reranked, scoresResult);
+
+      setAllCases(sorted);
+      setCases(filterByTab(sorted, activeTab));
+      recalcCounts(sorted);
       setShowRefreshBanner(false);
 
     } catch (err: any) {
@@ -214,7 +282,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [filters, router, supabase, setupDismissed, fetchScores, activeTab, filterByTab, recalcCounts]);
+  }, [filters, router, supabase, setupDismissed, fetchScores, fetchViability, activeTab, filterByTab, recalcCounts, sortCases]);
 
   // Re-filter when tab changes (without refetching)
   useEffect(() => {
@@ -247,56 +315,137 @@ export default function DashboardPage() {
     fetchCases();
   };
 
-  const handleScoreAllCases = async () => {
-    setIsScoring(true);
-    setScoringMessage('Checking clusters...');
+  // --- Background scoring ---
+  const matchesKeyword = (c: ScoredCase, kw: string): boolean => {
+    const lower = kw.toLowerCase();
+    const name = (c.case_name || '').toLowerCase();
+    const summary = (c.complaint_summary || '').toLowerCase();
+    return name.includes(lower) || summary.includes(lower);
+  };
+
+  const runBackgroundScoring = useCallback(async (options: ScoringOptions) => {
+    scoringCancelledRef.current = false;
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+
+    // Filter target cases based on options
+    const isStaleOnly = options.viability.length === 3 && options.includeAlreadyScored &&
+      !options.dateRange?.from && !options.dateRange?.to && !options.keyword;
+
+    const targetCases = allCases.filter((c) => {
+      const viabilityData = viabilityMap.get(c.id);
+      const caseViability = viabilityData?.case_viability || null;
+
+      // Viability filter
+      if (caseViability && !options.viability.includes(caseViability)) return false;
+      // If case has no viability data, include it only if all viability levels selected
+      if (!caseViability && options.viability.length < 3) return false;
+
+      // Date range
+      if (options.dateRange?.from && c.filed && c.filed < options.dateRange.from) return false;
+      if (options.dateRange?.to && c.filed && c.filed > options.dateRange.to) return false;
+
+      // Keyword
+      if (options.keyword && !matchesKeyword(c, options.keyword)) return false;
+
+      // Scored/unscored
+      const score = scoresMap.get(c.id);
+      if (isStaleOnly) {
+        // Stale only mode: only cases with stale scores
+        return score?.stale === true;
+      }
+      if (!options.includeAlreadyScored) {
+        if (score && !score.stale) return false;
+      }
+
+      return true;
+    });
+
+    if (targetCases.length === 0) {
+      showToast('No cases match the selected filters');
+      return;
+    }
+
+    const batches = chunk(targetCases.map((c) => c.id), 10);
+    setScoringProgress({ active: true, completed: 0, total: targetCases.length });
+
+    let totalCompleted = 0;
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      for (const batch of batches) {
+        if (scoringCancelledRef.current) break;
 
-      // Check if clusters exist
-      const clusterResponse = await fetch('/api/admin/cluster-cases', {
-        headers: { 'Authorization': `Bearer ${session.access_token}` },
-      });
-      const clusterStats = await clusterResponse.json();
+        const response = await fetch('/api/score-cases', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ mode: 'direct', case_ids: batch }),
+        });
 
-      if (!clusterStats.clustering_run) {
-        setScoringMessage(null);
-        setIsScoring(false);
-        setError('No clusters found. An admin must run clustering first.');
-        return;
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          showToast(errData.error || 'Scoring batch failed');
+          continue;
+        }
+
+        const result = await response.json();
+
+        // Merge new scores into scoresMap
+        if (result.scores) {
+          setScoresMap((prev) => {
+            const next = new Map(prev);
+            for (const s of result.scores) {
+              next.set(s.case_id, {
+                case_id: s.case_id,
+                score: s.score,
+                reasoning: s.reasoning,
+                source: 'direct',
+                stale: false,
+              });
+            }
+            return next;
+          });
+        }
+
+        totalCompleted += batch.length;
+        setScoringProgress({ active: true, completed: totalCompleted, total: targetCases.length });
       }
 
-      setScoringMessage('Scoring... (this may take a minute)');
-
-      const scoreResponse = await fetch('/api/score-cases', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ mode: 'cluster' }),
-      });
-
-      const result = await scoreResponse.json();
-
-      if (!scoreResponse.ok) {
-        setError(result.error || 'Scoring failed');
-      } else {
-        await fetchScores(session.user.id);
-        showToast('All cases scored');
+      if (!scoringCancelledRef.current) {
+        showToast(`Scored ${totalCompleted} cases`);
       }
     } catch (err: any) {
-      setError(err.message || 'Scoring failed');
+      showToast(err.message || 'Scoring failed');
     } finally {
-      setIsScoring(false);
-      setScoringMessage(null);
+      setScoringProgress(null);
     }
+  }, [allCases, scoresMap, viabilityMap, supabase, showToast]);
+
+  // Re-sort cases when scoresMap changes (scores arrive during background scoring)
+  useEffect(() => {
+    if (allCases.length > 0 && scoresMap.size > 0) {
+      const sorted = sortCases(allCases, scoresMap);
+      setAllCases(sorted);
+      setCases(filterByTab(sorted, activeTab));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scoresMap]);
+
+  const handleStartScoring = (options: ScoringOptions) => {
+    setShowScoringModal(false);
+    runBackgroundScoring(options);
+  };
+
+  const handleCancelScoring = () => {
+    scoringCancelledRef.current = true;
+    setScoringProgress(null);
+    showToast('Scoring cancelled');
   };
 
   const handleCardInteraction = useCallback((caseId: string, type: 'liked' | 'disliked' | 'reviewed') => {
-    // Update interaction sets
     if (type === 'liked') likedIdsRef.current.add(caseId);
     if (type === 'disliked') dislikedIdsRef.current.add(caseId);
     if (type === 'reviewed') reviewedIdsRef.current.add(caseId);
@@ -306,7 +455,6 @@ export default function DashboardPage() {
     recalcCounts(allCases);
 
     if (activeTab === 'new') {
-      // Animate out then remove
       setRemovingCaseIds((prev) => new Set([...prev, caseId]));
       setTimeout(() => {
         setCases((prev) => prev.filter((c) => c.id !== caseId));
@@ -320,13 +468,49 @@ export default function DashboardPage() {
     }
   }, [activeTab, allCases, recalcCounts, showToast]);
 
-  const hasScores = scoresMap.size > 0;
+  // Compute case stats for modal
+  const caseStats: CaseStats = useMemo(() => {
+    let high = 0, medium = 0, low = 0;
+    for (const c of allCases) {
+      const v = viabilityMap.get(c.id);
+      if (v?.case_viability === 'high') high++;
+      else if (v?.case_viability === 'medium') medium++;
+      else if (v?.case_viability === 'low') low++;
+    }
+    let alreadyScored = 0;
+    let stale = 0;
+    for (const c of allCases) {
+      const s = scoresMap.get(c.id);
+      if (s) {
+        if (s.stale) stale++;
+        else alreadyScored++;
+      }
+    }
+    return {
+      total: allCases.length,
+      highViability: high,
+      mediumViability: medium,
+      lowViability: low,
+      alreadyScored,
+      stale,
+    };
+  }, [allCases, viabilityMap, scoresMap]);
+
+  const progressPercent = scoringProgress
+    ? Math.round((scoringProgress.completed / Math.max(1, scoringProgress.total)) * 100)
+    : 0;
 
   return (
     <AppShell>
       {showSetupModal && (
         <NewUserSetupModal onComplete={handleSetupComplete} />
       )}
+      <ScoreCasesModal
+        isOpen={showScoringModal}
+        onClose={() => setShowScoringModal(false)}
+        onStartScoring={handleStartScoring}
+        caseStats={caseStats}
+      />
       <ToastContainer toasts={toasts} />
       <div className="page-container">
         {/* Header */}
@@ -336,23 +520,20 @@ export default function DashboardPage() {
               <LayoutDashboard className="w-6 h-6 text-themis-500" />
               Dashboard
             </h1>
+            {!loading && (
+              <p className="text-sm text-gray-500 mt-1">
+                Showing {cases.length}{cases.length !== allCases.length ? ` of ${allCases.length}` : ''} cases
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2 self-start">
             <button
-              onClick={handleScoreAllCases}
-              disabled={isScoring || loading}
+              onClick={() => setShowScoringModal(true)}
+              disabled={loading || !!scoringProgress}
               className="btn-primary gap-2"
             >
-              {isScoring ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Sparkles className="w-4 h-4" />
-              )}
-              {isScoring
-                ? (scoringMessage || 'Scoring...')
-                : hasScores
-                  ? 'Re-Score All Cases'
-                  : 'Score All Cases'}
+              <Sparkles className="w-4 h-4" />
+              Score Cases
             </button>
             <button
               onClick={fetchCases}
@@ -368,6 +549,30 @@ export default function DashboardPage() {
             </Link>
           </div>
         </div>
+
+        {/* Scoring Progress Bar */}
+        {scoringProgress && (
+          <div className="mb-6 animate-slide-down">
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-sm text-themis-700 font-medium">
+                Scoring cases... {scoringProgress.completed} of {scoringProgress.total} complete
+              </p>
+              <button
+                onClick={handleCancelScoring}
+                className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1 transition-colors"
+              >
+                <X className="w-3 h-3" />
+                Cancel
+              </button>
+            </div>
+            <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-themis-500 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Interaction Tabs */}
         <div className="mb-6">
@@ -488,6 +693,7 @@ export default function DashboardPage() {
               <div className="space-y-4">
                 {cases.map((c, i) => {
                   const scoreData = scoresMap.get(c.id);
+                  const viabilityData = viabilityMap.get(c.id);
                   const isRemoving = removingCaseIds.has(c.id);
                   return (
                     <div
@@ -507,8 +713,8 @@ export default function DashboardPage() {
                         scoreReasoning={scoreData?.reasoning ?? null}
                         scoreSource={(scoreData?.source as 'cluster' | 'direct') ?? null}
                         scoreStale={scoreData?.stale ?? false}
-                        caseViability={(c as any).case_viability ?? null}
-                        viabilityReasoning={(c as any).viability_reasoning ?? null}
+                        caseViability={viabilityData?.case_viability ?? null}
+                        viabilityReasoning={viabilityData?.viability_reasoning ?? null}
                       />
                     </div>
                   );
