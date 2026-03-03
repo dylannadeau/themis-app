@@ -4,7 +4,6 @@ import { decrypt } from '@/lib/encryption';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const DEFAULT_MODEL = 'gemini-2.0-flash';
-const BATCH_SIZE = 5;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -229,17 +228,9 @@ export async function POST(request: NextRequest) {
 
     const userId = session.user.id;
     const body = await request.json();
-    const { mode, case_ids } = body as {
-      mode: 'cluster' | 'direct';
+    const { case_ids } = body as {
       case_ids?: string[];
     };
-
-    if (!mode || !['cluster', 'direct'].includes(mode)) {
-      return NextResponse.json(
-        { error: 'mode must be "cluster" or "direct"' },
-        { status: 400 }
-      );
-    }
 
     // Fetch user settings
     const settings = await getUserSettings(supabase, userId);
@@ -274,160 +265,20 @@ export async function POST(request: NextRequest) {
       getUserNarratives(supabase, userId),
     ]);
 
-    if (mode === 'cluster') {
-      return handleClusterScoring(supabase, userId, apiKey, model, bioText, profileEntries, narratives);
-    } else {
-      return handleDirectScoring(
-        supabase,
-        userId,
-        apiKey,
-        model,
-        bioText,
-        profileEntries,
-        narratives,
-        case_ids
-      );
-    }
+    return handleDirectScoring(
+      supabase,
+      userId,
+      apiKey,
+      model,
+      bioText,
+      profileEntries,
+      narratives,
+      case_ids
+    );
   } catch (err: unknown) {
     console.error('POST /api/score-cases error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
-}
-
-async function handleClusterScoring(
-  supabase: ReturnType<typeof createServerSupabaseClient>,
-  userId: string,
-  apiKey: string,
-  model: string,
-  bioText: string,
-  profileEntries: ProfileEntry[],
-  narratives: NarrativeEntry[]
-) {
-  // Step 2: Fetch cluster representatives
-  const { data: representatives, error: repError } = await supabase
-    .from('case_clusters')
-    .select('case_id, cluster_id')
-    .eq('is_representative', true);
-
-  if (repError || !representatives || representatives.length === 0) {
-    return NextResponse.json(
-      { error: 'No clusters found. Run clustering first via POST /api/admin/cluster-cases.' },
-      { status: 400 }
-    );
-  }
-
-  // Step 3: Skip reps that already have non-stale scores
-  const repCaseIds = representatives.map((r: { case_id: string }) => r.case_id);
-
-  const { data: existingScores } = await supabase
-    .from('user_case_scores')
-    .select('case_id')
-    .eq('user_id', userId)
-    .eq('stale', false)
-    .in('case_id', repCaseIds);
-
-  const scoredCaseIds = new Set(
-    (existingScores || []).map((s: { case_id: string }) => s.case_id)
-  );
-  const unscoredReps = representatives.filter(
-    (r: { case_id: string }) => !scoredCaseIds.has(r.case_id)
-  );
-
-  if (unscoredReps.length === 0) {
-    // All reps scored — still propagate to cluster members
-    const propagationResult = await propagateAllScores(
-      supabase,
-      userId,
-      representatives
-    );
-    return NextResponse.json({
-      success: true,
-      representatives_scored: 0,
-      representatives_already_scored: repCaseIds.length,
-      total_cases_scored: propagationResult.totalPropagated,
-      message: 'All representatives already scored. Propagated to cluster members.',
-    });
-  }
-
-  // Step 4: Fetch case data for unscored reps
-  const unscoredCaseIds = unscoredReps.map((r: { case_id: string }) => r.case_id);
-  const { data: casesData, error: casesError } = await supabase
-    .from('cases')
-    .select('id, case_name, complaint_summary, court_name, filed, nature_of_suit, cause_of_action')
-    .in('id', unscoredCaseIds);
-
-  if (casesError || !casesData) {
-    return NextResponse.json(
-      { error: `Failed to fetch case data: ${casesError?.message}` },
-      { status: 500 }
-    );
-  }
-
-  // Step 7: Call Gemini in batches of 5 reps
-  const allScores: ScoreResult[] = [];
-  const errors: string[] = [];
-
-  for (let i = 0; i < casesData.length; i += BATCH_SIZE) {
-    const batch = casesData.slice(i, i + BATCH_SIZE) as CaseData[];
-    const prompt = buildScoringPrompt(bioText, profileEntries, narratives, batch);
-
-    let scores = await callGeminiAndParse(prompt, apiKey, model);
-
-    // Retry once on failure
-    if (scores.length === 0 && batch.length > 0) {
-      await sleep(1000);
-      scores = await callGeminiAndParse(prompt, apiKey, model);
-      if (scores.length === 0) {
-        errors.push(
-          `Failed to score batch starting at case ${batch[0].id} after retry`
-        );
-        continue;
-      }
-    }
-
-    allScores.push(...scores);
-
-    // Small delay between batches
-    if (i + BATCH_SIZE < casesData.length) {
-      await sleep(300);
-    }
-  }
-
-  // Upsert representative scores
-  for (const score of allScores) {
-    const { error: upsertError } = await supabase
-      .from('user_case_scores')
-      .upsert(
-        {
-          user_id: userId,
-          case_id: score.case_id,
-          score: score.score,
-          reasoning: score.reasoning,
-          source: 'cluster',
-          stale: false,
-          scored_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id,case_id' }
-      );
-
-    if (upsertError) {
-      errors.push(`Failed to upsert score for ${score.case_id}: ${upsertError.message}`);
-    }
-  }
-
-  // Step 8: Propagate to cluster members
-  const propagationResult = await propagateAllScores(
-    supabase,
-    userId,
-    representatives
-  );
-
-  return NextResponse.json({
-    success: true,
-    representatives_scored: allScores.length,
-    total_cases_scored: allScores.length + propagationResult.totalPropagated,
-    ...(errors.length > 0 ? { errors } : {}),
-  });
 }
 
 async function callGeminiAndParse(
@@ -438,84 +289,6 @@ async function callGeminiAndParse(
   const text = await callGemini(prompt, apiKey, model);
   if (!text) return [];
   return parseScores(text);
-}
-
-async function propagateAllScores(
-  supabase: ReturnType<typeof createServerSupabaseClient>,
-  userId: string,
-  representatives: { case_id: string; cluster_id: number }[]
-) {
-  let totalPropagated = 0;
-
-  for (const rep of representatives) {
-    // Get rep's score
-    const { data: repScore } = await supabase
-      .from('user_case_scores')
-      .select('score, reasoning')
-      .eq('user_id', userId)
-      .eq('case_id', rep.case_id)
-      .eq('stale', false)
-      .single();
-
-    if (!repScore) continue;
-
-    // Get cluster members
-    const { data: members } = await supabase
-      .from('case_clusters')
-      .select('case_id, distance_to_representative, is_representative')
-      .eq('cluster_id', rep.cluster_id);
-
-    if (!members || members.length <= 1) continue;
-
-    // Compute median distance
-    const memberDistances = members
-      .filter(
-        (m: { is_representative: boolean; distance_to_representative: number | null }) =>
-          !m.is_representative && m.distance_to_representative != null
-      )
-      .map(
-        (m: { distance_to_representative: number }) =>
-          m.distance_to_representative
-      )
-      .sort((a: number, b: number) => a - b);
-
-    const medianDist =
-      memberDistances.length > 0
-        ? memberDistances[Math.floor(memberDistances.length / 2)]
-        : 0;
-
-    // Propagate scores to non-representative members
-    for (const member of members) {
-      if (member.is_representative) continue;
-
-      const dist = member.distance_to_representative ?? 0;
-      const memberScore =
-        dist <= medianDist
-          ? repScore.score
-          : Math.max(1, repScore.score - 1);
-
-      const { error: upsertError } = await supabase
-        .from('user_case_scores')
-        .upsert(
-          {
-            user_id: userId,
-            case_id: member.case_id,
-            score: memberScore,
-            reasoning: `Propagated from cluster representative (distance: ${dist.toFixed(3)})`,
-            source: 'cluster',
-            stale: false,
-            scored_at: new Date().toISOString(),
-          },
-          { onConflict: 'user_id,case_id' }
-        );
-
-      if (!upsertError) {
-        totalPropagated++;
-      }
-    }
-  }
-
-  return { totalPropagated };
 }
 
 async function handleDirectScoring(
@@ -530,7 +303,7 @@ async function handleDirectScoring(
 ) {
   if (!caseIds || !Array.isArray(caseIds) || caseIds.length === 0) {
     return NextResponse.json(
-      { error: 'case_ids array is required for direct mode' },
+      { error: 'case_ids array is required' },
       { status: 400 }
     );
   }

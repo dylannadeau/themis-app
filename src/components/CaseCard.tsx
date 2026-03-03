@@ -16,7 +16,7 @@ interface CaseCardProps {
   onInteraction?: (caseId: string, type: 'liked' | 'disliked' | 'reviewed') => void;
   score?: number | null;
   scoreReasoning?: string | null;
-  scoreSource?: 'cluster' | 'direct' | null;
+  scoreSource?: string | null;
   scoreStale?: boolean;
   caseViability?: 'high' | 'medium' | 'low' | null;
   viabilityReasoning?: string | null;
@@ -29,7 +29,7 @@ function ScoreBadge({
   reasoning,
 }: {
   score?: number | null;
-  source?: 'cluster' | 'direct' | null;
+  source?: string | null;
   stale?: boolean;
   reasoning?: string | null;
 }) {
@@ -41,13 +41,13 @@ function ScoreBadge({
     display = '\u2014';
   } else if (score >= 8) {
     colorClasses = 'bg-emerald-50 text-emerald-700 border border-emerald-200/60';
-    display = source === 'cluster' ? `~${score}` : `${score}`;
+    display = `${score}`;
   } else if (score >= 5) {
     colorClasses = 'bg-amber-50 text-amber-700 border border-amber-200/60';
-    display = source === 'cluster' ? `~${score}` : `${score}`;
+    display = `${score}`;
   } else {
     colorClasses = 'bg-gray-100 text-gray-500 border border-gray-200/60';
-    display = source === 'cluster' ? `~${score}` : `${score}`;
+    display = `${score}`;
   }
 
   return (

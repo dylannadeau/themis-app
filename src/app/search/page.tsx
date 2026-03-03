@@ -77,7 +77,7 @@ export default function SearchPage() {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`,
           },
-          body: JSON.stringify({ mode: 'direct', case_ids: unscoredIds }),
+          body: JSON.stringify({ case_ids: unscoredIds }),
         });
 
         if (scoreResponse.ok) {
@@ -276,7 +276,7 @@ export default function SearchPage() {
                     caseData={c}
                     score={scoreData?.score ?? null}
                     scoreReasoning={scoreData?.reasoning ?? null}
-                    scoreSource={(scoreData?.source as 'cluster' | 'direct') ?? null}
+                    scoreSource={scoreData?.source ?? null}
                     scoreStale={scoreData?.stale ?? false}
                     caseViability={(c as any).case_viability ?? null}
                     viabilityReasoning={(c as any).viability_reasoning ?? null}
