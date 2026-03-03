@@ -68,7 +68,7 @@ export default function DashboardPage() {
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [totalCount, setTotalCount] = useState<number | null>(null);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
 
   // Refs for user data (available to loadMore without refetch)
   const reactionsMapRef = useRef<Map<string, any>>(new Map());
@@ -342,6 +342,30 @@ export default function DashboardPage() {
     }
   }, [hasMore, isLoadingMore, loading, page, filters.favoritesOnly, buildCasesQuery]);
 
+  // Callback ref for scroll sentinel — fires when the sentinel div mounts/unmounts,
+  // avoiding the timing issue where useEffect-based observers miss the initial mount.
+  const loadMoreRef = useRef(loadMoreCases);
+  loadMoreRef.current = loadMoreCases;
+
+  const setSentinelRef = useCallback((node: HTMLDivElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+
+    if (node) {
+      observerRef.current = new IntersectionObserver(
+        (entries) => {
+          if (entries[0].isIntersecting) {
+            loadMoreRef.current();
+          }
+        },
+        { rootMargin: '0px 0px 200px 0px' }
+      );
+      observerRef.current.observe(node);
+    }
+  }, []);
+
   // Re-filter when tab or loaded cases change
   useEffect(() => {
     setCases(filterByTab(allCases, activeTab));
@@ -482,24 +506,6 @@ export default function DashboardPage() {
       setScoringProgress(null);
     }
   }, [allCases, scoresMap, viabilityMap, supabase, showToast]);
-
-  // IntersectionObserver for infinite scroll
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          loadMoreCases();
-        }
-      },
-      { threshold: 0.1 }
-    );
-
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [loadMoreCases]);
 
   const handleStartScoring = (options: ScoringOptions) => {
     setShowScoringModal(false);
@@ -788,7 +794,7 @@ export default function DashboardPage() {
                 })}
 
                 {/* Scroll sentinel for infinite scroll */}
-                <div ref={sentinelRef} className="h-1" />
+                <div ref={setSentinelRef} className="h-1" />
 
                 {/* Loading spinner while fetching more */}
                 {isLoadingMore && (
