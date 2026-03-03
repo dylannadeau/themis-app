@@ -13,6 +13,7 @@ interface Signal {
 interface NarrativeFeedbackProps {
   caseId: string;
   compact?: boolean; // For use in CaseCard (collapsed by default)
+  onSubmitSuccess?: () => void;
 }
 
 const dimensionLabels: Record<string, string> = {
@@ -50,7 +51,7 @@ function SignalBadge({ signal }: { signal: Signal }) {
   );
 }
 
-export default function NarrativeFeedback({ caseId, compact = false }: NarrativeFeedbackProps) {
+export default function NarrativeFeedback({ caseId, compact = false, onSubmitSuccess }: NarrativeFeedbackProps) {
   const [narrative, setNarrative] = useState('');
   const [savedNarrative, setSavedNarrative] = useState<string | null>(null);
   const [signals, setSignals] = useState<Signal[]>([]);
@@ -121,6 +122,7 @@ export default function NarrativeFeedback({ caseId, compact = false }: Narrative
       setSavedNarrative(narrative.trim());
       setSignals(data.signals || []);
       setSuccess(true);
+      onSubmitSuccess?.();
 
       if (data.extraction_failed) {
         setError('Feedback saved, but preference extraction failed. It will be retried later.');

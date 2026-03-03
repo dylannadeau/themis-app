@@ -13,6 +13,7 @@ interface CaseCardProps {
   caseData: ScoredCase;
   onReactionChange?: (caseId: string, reaction: 1 | -1 | null) => void;
   onFavoriteChange?: (caseId: string, favorited: boolean) => void;
+  onInteraction?: (caseId: string, type: 'liked' | 'disliked' | 'reviewed') => void;
   score?: number | null;
   scoreReasoning?: string | null;
   scoreSource?: 'cluster' | 'direct' | null;
@@ -91,6 +92,7 @@ export default function CaseCard({
   caseData,
   onReactionChange,
   onFavoriteChange,
+  onInteraction,
   score,
   scoreReasoning,
   scoreSource,
@@ -128,6 +130,8 @@ export default function CaseCard({
 
       setCurrentReaction(newReaction);
       onReactionChange?.(caseData.id, newReaction);
+      if (newReaction === 1) onInteraction?.(caseData.id, 'liked');
+      else if (newReaction === -1) onInteraction?.(caseData.id, 'disliked');
     } catch (error) {
       console.error('Failed to update reaction:', error);
     } finally {
@@ -218,7 +222,11 @@ export default function CaseCard({
       {/* Narrative Feedback (expandable) */}
       {showNarrative && (
         <div className="mb-3 p-3 bg-gray-50/50 rounded-lg border border-gray-100 animate-slide-down">
-          <NarrativeFeedback caseId={caseData.id} compact={false} />
+          <NarrativeFeedback
+            caseId={caseData.id}
+            compact={false}
+            onSubmitSuccess={() => onInteraction?.(caseData.id, 'reviewed')}
+          />
         </div>
       )}
 

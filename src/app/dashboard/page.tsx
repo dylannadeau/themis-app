@@ -1,14 +1,16 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase-browser';
 import AppShell from '@/components/AppShell';
 import CaseCard from '@/components/CaseCard';
 import FilterPanel, { FilterState, defaultFilters } from '@/components/FilterPanel';
+import InteractionTabs, { InteractionTab } from '@/components/InteractionTabs';
 import { CaseWithResult } from '@/lib/types';
 import { rerankWithProfile, ScoredCase, PreferenceProfileEntry, DimensionWeight } from '@/lib/personalization';
 import NewUserSetupModal from '@/components/NewUserSetupModal';
+import { useToast, ToastContainer } from '@/components/Toast';
 import { LayoutDashboard, Loader2, AlertCircle, Search, RefreshCw, Sparkles } from 'lucide-react';
 import Link from 'next/link';
 
@@ -21,6 +23,7 @@ interface ScoreData {
 }
 
 export default function DashboardPage() {
+  const [allCases, setAllCases] = useState<ScoredCase[]>([]);
   const [cases, setCases] = useState<ScoredCase[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -34,6 +37,17 @@ export default function DashboardPage() {
   const [isScoring, setIsScoring] = useState(false);
   const [scoringMessage, setScoringMessage] = useState<string | null>(null);
   const [showRefreshBanner, setShowRefreshBanner] = useState(false);
+  const [activeTab, setActiveTab] = useState<InteractionTab>('new');
+  const [removingCaseIds, setRemovingCaseIds] = useState<Set<string>>(new Set());
+
+  // Interaction sets — refs for mutation without re-render, state mirror for counts
+  const likedIdsRef = useRef<Set<string>>(new Set());
+  const dislikedIdsRef = useRef<Set<string>>(new Set());
+  const reviewedIdsRef = useRef<Set<string>>(new Set());
+  const interactedIdsRef = useRef<Set<string>>(new Set());
+  const [counts, setCounts] = useState({ new: 0, liked: 0, disliked: 0, reviewed: 0, all: 0 });
+
+  const { toasts, showToast } = useToast();
   const router = useRouter();
   const supabase = createClient();
 
@@ -49,6 +63,26 @@ export default function DashboardPage() {
     setScoresMap(map);
     return map;
   }, [supabase]);
+
+  const recalcCounts = useCallback((allCasesArr: ScoredCase[]) => {
+    setCounts({
+      new: allCasesArr.filter((c) => !interactedIdsRef.current.has(c.id)).length,
+      liked: likedIdsRef.current.size,
+      disliked: dislikedIdsRef.current.size,
+      reviewed: reviewedIdsRef.current.size,
+      all: allCasesArr.length,
+    });
+  }, []);
+
+  const filterByTab = useCallback((allCasesArr: ScoredCase[], tab: InteractionTab): ScoredCase[] => {
+    switch (tab) {
+      case 'new': return allCasesArr.filter((c) => !interactedIdsRef.current.has(c.id));
+      case 'liked': return allCasesArr.filter((c) => likedIdsRef.current.has(c.id));
+      case 'disliked': return allCasesArr.filter((c) => dislikedIdsRef.current.has(c.id));
+      case 'reviewed': return allCasesArr.filter((c) => reviewedIdsRef.current.has(c.id));
+      case 'all': return allCasesArr;
+    }
+  }, []);
 
   const fetchCases = useCallback(async () => {
     setLoading(true);
@@ -89,14 +123,18 @@ export default function DashboardPage() {
       const { data: casesData, error: casesError } = await query;
       if (casesError) throw casesError;
 
-      // Fetch user reactions, favorites, and scores in parallel
-      const [reactionsResult, favoritesResult, profileResult, weightsResult, settingsResult] = await Promise.all([
+      // Fetch user reactions, favorites, narratives, and profile in parallel
+      const [reactionsResult, favoritesResult, narrativesResult, profileResult, weightsResult, settingsResult] = await Promise.all([
         supabase
           .from('user_reactions')
           .select('*')
           .eq('user_id', session.user.id),
         supabase
           .from('user_favorites')
+          .select('case_id')
+          .eq('user_id', session.user.id),
+        supabase
+          .from('user_narratives')
           .select('case_id')
           .eq('user_id', session.user.id),
         supabase
@@ -117,12 +155,24 @@ export default function DashboardPage() {
       // Fetch scores
       await fetchScores(session.user.id);
 
+      const reactions = reactionsResult.data || [];
       const reactionsMap = new Map(
-        (reactionsResult.data || []).map((r: any) => [r.case_id, r])
+        reactions.map((r: any) => [r.case_id, r])
       );
       const favoritesSet = new Set(
         (favoritesResult.data || []).map((f: any) => f.case_id)
       );
+
+      // Build interaction sets
+      const liked = new Set(reactions.filter((r: any) => r.reaction === 1).map((r: any) => r.case_id as string));
+      const disliked = new Set(reactions.filter((r: any) => r.reaction === -1).map((r: any) => r.case_id as string));
+      const reviewed = new Set((narrativesResult.data || []).map((n: any) => n.case_id as string));
+      const interacted = new Set([...liked, ...disliked, ...reviewed]);
+
+      likedIdsRef.current = liked;
+      dislikedIdsRef.current = disliked;
+      reviewedIdsRef.current = reviewed;
+      interactedIdsRef.current = interacted;
 
       // Merge
       let merged: CaseWithResult[] = (casesData || []).map((c: any) => ({
@@ -154,7 +204,9 @@ export default function DashboardPage() {
         bioText
       );
 
-      setCases(reranked);
+      setAllCases(reranked);
+      setCases(filterByTab(reranked, activeTab));
+      recalcCounts(reranked);
       setShowRefreshBanner(false);
 
     } catch (err: any) {
@@ -162,7 +214,12 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [filters, router, supabase, setupDismissed, fetchScores]);
+  }, [filters, router, supabase, setupDismissed, fetchScores, activeTab, filterByTab, recalcCounts]);
+
+  // Re-filter when tab changes (without refetching)
+  useEffect(() => {
+    setCases(filterByTab(allCases, activeTab));
+  }, [activeTab, allCases, filterByTab]);
 
   useEffect(() => {
     async function fetchFilterOptions() {
@@ -227,8 +284,8 @@ export default function DashboardPage() {
       if (!scoreResponse.ok) {
         setError(result.error || 'Scoring failed');
       } else {
-        // Re-fetch scores
         await fetchScores(session.user.id);
+        showToast('All cases scored');
       }
     } catch (err: any) {
       setError(err.message || 'Scoring failed');
@@ -238,9 +295,30 @@ export default function DashboardPage() {
     }
   };
 
-  const handleReactionChange = () => {
+  const handleCardInteraction = useCallback((caseId: string, type: 'liked' | 'disliked' | 'reviewed') => {
+    // Update interaction sets
+    if (type === 'liked') likedIdsRef.current.add(caseId);
+    if (type === 'disliked') dislikedIdsRef.current.add(caseId);
+    if (type === 'reviewed') reviewedIdsRef.current.add(caseId);
+    interactedIdsRef.current.add(caseId);
+
     setShowRefreshBanner(true);
-  };
+    recalcCounts(allCases);
+
+    if (activeTab === 'new') {
+      // Animate out then remove
+      setRemovingCaseIds((prev) => new Set([...prev, caseId]));
+      setTimeout(() => {
+        setCases((prev) => prev.filter((c) => c.id !== caseId));
+        setRemovingCaseIds((prev) => {
+          const next = new Set(prev);
+          next.delete(caseId);
+          return next;
+        });
+      }, 300);
+      showToast(`Moved to ${type.charAt(0).toUpperCase() + type.slice(1)}`);
+    }
+  }, [activeTab, allCases, recalcCounts, showToast]);
 
   const hasScores = scoresMap.size > 0;
 
@@ -249,16 +327,17 @@ export default function DashboardPage() {
       {showSetupModal && (
         <NewUserSetupModal onComplete={handleSetupComplete} />
       )}
+      <ToastContainer toasts={toasts} />
       <div className="page-container">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <div>
             <h1 className="section-title flex items-center gap-3">
               <LayoutDashboard className="w-6 h-6 text-themis-500" />
               Dashboard
             </h1>
             <p className="text-sm text-gray-500 mt-1">
-              {loading ? 'Loading...' : `${cases.length} cases with valid summaries`}
+              {loading ? 'Loading...' : `${counts.all} cases with valid summaries`}
             </p>
           </div>
           <div className="flex items-center gap-2 self-start">
@@ -291,6 +370,15 @@ export default function DashboardPage() {
               Search Cases
             </Link>
           </div>
+        </div>
+
+        {/* Interaction Tabs */}
+        <div className="mb-6">
+          <InteractionTabs
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            counts={counts}
+          />
         </div>
 
         {/* Refresh Banner */}
@@ -375,27 +463,49 @@ export default function DashboardPage() {
               </div>
             ) : cases.length === 0 ? (
               <div className="card p-12 text-center">
-                <p className="text-gray-500">No cases match your current filters.</p>
-                <button
-                  onClick={() => setFilters(defaultFilters)}
-                  className="btn-secondary mt-4 text-sm"
-                >
-                  Clear Filters
-                </button>
+                <p className="text-gray-500">
+                  {activeTab === 'new'
+                    ? 'No new cases to review. Check the other tabs or adjust your filters.'
+                    : activeTab === 'all'
+                      ? 'No cases match your current filters.'
+                      : `No ${activeTab} cases yet.`}
+                </p>
+                {activeTab !== 'all' && (
+                  <button
+                    onClick={() => setActiveTab('all')}
+                    className="btn-secondary mt-4 text-sm"
+                  >
+                    View All Cases
+                  </button>
+                )}
+                {activeTab === 'all' && (
+                  <button
+                    onClick={() => setFilters(defaultFilters)}
+                    className="btn-secondary mt-4 text-sm"
+                  >
+                    Clear Filters
+                  </button>
+                )}
               </div>
             ) : (
               <div className="space-y-4">
                 {cases.map((c, i) => {
                   const scoreData = scoresMap.get(c.id);
+                  const isRemoving = removingCaseIds.has(c.id);
                   return (
                     <div
                       key={c.id}
-                      className="animate-slide-up"
-                      style={{ animationDelay: `${Math.min(i * 40, 400)}ms`, animationFillMode: 'both' }}
+                      className={
+                        isRemoving
+                          ? 'opacity-0 -translate-y-2 scale-[0.98] transition-all duration-300'
+                          : 'animate-slide-up'
+                      }
+                      style={isRemoving ? undefined : { animationDelay: `${Math.min(i * 40, 400)}ms`, animationFillMode: 'both' }}
                     >
                       <CaseCard
                         caseData={c}
-                        onReactionChange={handleReactionChange}
+                        onReactionChange={() => setShowRefreshBanner(true)}
+                        onInteraction={handleCardInteraction}
                         score={scoreData?.score ?? null}
                         scoreReasoning={scoreData?.reasoning ?? null}
                         scoreSource={(scoreData?.source as 'cluster' | 'direct') ?? null}
