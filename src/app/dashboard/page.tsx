@@ -67,9 +67,9 @@ export default function DashboardPage() {
   const recalcCounts = useCallback((allCasesArr: ScoredCase[]) => {
     setCounts({
       new: allCasesArr.filter((c) => !interactedIdsRef.current.has(c.id)).length,
-      liked: likedIdsRef.current.size,
-      disliked: dislikedIdsRef.current.size,
-      reviewed: reviewedIdsRef.current.size,
+      liked: allCasesArr.filter((c) => likedIdsRef.current.has(c.id)).length,
+      disliked: allCasesArr.filter((c) => dislikedIdsRef.current.has(c.id)).length,
+      reviewed: allCasesArr.filter((c) => reviewedIdsRef.current.has(c.id)).length,
       all: allCasesArr.length,
     });
   }, []);
@@ -336,9 +336,6 @@ export default function DashboardPage() {
               <LayoutDashboard className="w-6 h-6 text-themis-500" />
               Dashboard
             </h1>
-            <p className="text-sm text-gray-500 mt-1">
-              {loading ? 'Loading...' : `${counts.all} cases with valid summaries`}
-            </p>
           </div>
           <div className="flex items-center gap-2 self-start">
             <button
