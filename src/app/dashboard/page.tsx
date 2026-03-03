@@ -9,8 +9,16 @@ import FilterPanel, { FilterState, defaultFilters } from '@/components/FilterPan
 import { CaseWithResult } from '@/lib/types';
 import { rerankWithProfile, ScoredCase, PreferenceProfileEntry, DimensionWeight } from '@/lib/personalization';
 import NewUserSetupModal from '@/components/NewUserSetupModal';
-import { LayoutDashboard, Loader2, AlertCircle, Search } from 'lucide-react';
+import { LayoutDashboard, Loader2, AlertCircle, Search, RefreshCw, Sparkles } from 'lucide-react';
 import Link from 'next/link';
+
+interface ScoreData {
+  case_id: string;
+  score: number;
+  reasoning: string | null;
+  source: string;
+  stale: boolean;
+}
 
 export default function DashboardPage() {
   const [cases, setCases] = useState<ScoredCase[]>([]);
@@ -22,8 +30,25 @@ export default function DashboardPage() {
   const [hasBio, setHasBio] = useState<boolean | null>(null);
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [setupDismissed, setSetupDismissed] = useState(false);
+  const [scoresMap, setScoresMap] = useState<Map<string, ScoreData>>(new Map());
+  const [isScoring, setIsScoring] = useState(false);
+  const [scoringMessage, setScoringMessage] = useState<string | null>(null);
+  const [showRefreshBanner, setShowRefreshBanner] = useState(false);
   const router = useRouter();
   const supabase = createClient();
+
+  const fetchScores = useCallback(async (userId: string) => {
+    const { data: scores } = await supabase
+      .from('user_case_scores')
+      .select('case_id, score, reasoning, source, stale')
+      .eq('user_id', userId);
+
+    const map = new Map(
+      (scores || []).map((s: ScoreData) => [s.case_id, s])
+    );
+    setScoresMap(map);
+    return map;
+  }, [supabase]);
 
   const fetchCases = useCallback(async () => {
     setLoading(true);
@@ -64,39 +89,16 @@ export default function DashboardPage() {
       const { data: casesData, error: casesError } = await query;
       if (casesError) throw casesError;
 
-      // Fetch user reactions
-      const { data: reactions } = await supabase
-        .from('user_reactions')
-        .select('*')
-        .eq('user_id', session.user.id);
-
-      const reactionsMap = new Map(
-        (reactions || []).map((r: any) => [r.case_id, r])
-      );
-
-      // Fetch user favorites
-      const { data: favorites } = await supabase
-        .from('user_favorites')
-        .select('case_id')
-        .eq('user_id', session.user.id);
-
-      const favoritesSet = new Set(
-        (favorites || []).map((f: any) => f.case_id)
-      );
-
-      // Merge
-      let merged: CaseWithResult[] = (casesData || []).map((c: any) => ({
-        ...c,
-        user_reaction: reactionsMap.get(c.id) || null,
-        user_favorite: favoritesSet.has(c.id),
-      }));
-
-      if (filters.favoritesOnly) {
-        merged = merged.filter((c) => c.user_favorite);
-      }
-
-      // Fetch preference profile, dimension weights, and bio
-      const [profileResult, weightsResult, settingsResult] = await Promise.all([
+      // Fetch user reactions, favorites, and scores in parallel
+      const [reactionsResult, favoritesResult, profileResult, weightsResult, settingsResult] = await Promise.all([
+        supabase
+          .from('user_reactions')
+          .select('*')
+          .eq('user_id', session.user.id),
+        supabase
+          .from('user_favorites')
+          .select('case_id')
+          .eq('user_id', session.user.id),
         supabase
           .from('user_preference_profile')
           .select('dimension, entity, cumulative_score, mention_count, avg_score')
@@ -111,6 +113,27 @@ export default function DashboardPage() {
           .eq('user_id', session.user.id)
           .single(),
       ]);
+
+      // Fetch scores
+      await fetchScores(session.user.id);
+
+      const reactionsMap = new Map(
+        (reactionsResult.data || []).map((r: any) => [r.case_id, r])
+      );
+      const favoritesSet = new Set(
+        (favoritesResult.data || []).map((f: any) => f.case_id)
+      );
+
+      // Merge
+      let merged: CaseWithResult[] = (casesData || []).map((c: any) => ({
+        ...c,
+        user_reaction: reactionsMap.get(c.id) || null,
+        user_favorite: favoritesSet.has(c.id),
+      }));
+
+      if (filters.favoritesOnly) {
+        merged = merged.filter((c) => c.user_favorite);
+      }
 
       const bioText = settingsResult.data?.bio_text || null;
       const userHasApiKey = !!settingsResult.data?.api_key_encrypted;
@@ -132,13 +155,14 @@ export default function DashboardPage() {
       );
 
       setCases(reranked);
+      setShowRefreshBanner(false);
 
     } catch (err: any) {
       setError(err.message || 'Failed to load cases');
     } finally {
       setLoading(false);
     }
-  }, [filters, router, supabase, setupDismissed]);
+  }, [filters, router, supabase, setupDismissed, fetchScores]);
 
   useEffect(() => {
     async function fetchFilterOptions() {
@@ -166,6 +190,60 @@ export default function DashboardPage() {
     fetchCases();
   };
 
+  const handleScoreAllCases = async () => {
+    setIsScoring(true);
+    setScoringMessage('Checking clusters...');
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      // Check if clusters exist
+      const clusterResponse = await fetch('/api/admin/cluster-cases', {
+        headers: { 'Authorization': `Bearer ${session.access_token}` },
+      });
+      const clusterStats = await clusterResponse.json();
+
+      if (!clusterStats.clustering_run) {
+        setScoringMessage(null);
+        setIsScoring(false);
+        setError('No clusters found. An admin must run clustering first.');
+        return;
+      }
+
+      setScoringMessage('Scoring... (this may take a minute)');
+
+      const scoreResponse = await fetch('/api/score-cases', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ mode: 'cluster' }),
+      });
+
+      const result = await scoreResponse.json();
+
+      if (!scoreResponse.ok) {
+        setError(result.error || 'Scoring failed');
+      } else {
+        // Re-fetch scores
+        await fetchScores(session.user.id);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Scoring failed');
+    } finally {
+      setIsScoring(false);
+      setScoringMessage(null);
+    }
+  };
+
+  const handleReactionChange = () => {
+    setShowRefreshBanner(true);
+  };
+
+  const hasScores = scoresMap.size > 0;
+
   return (
     <AppShell>
       {showSetupModal && (
@@ -183,11 +261,55 @@ export default function DashboardPage() {
               {loading ? 'Loading...' : `${cases.length} cases with valid summaries`}
             </p>
           </div>
-          <Link href="/search" className="btn-primary gap-2 self-start">
-            <Search className="w-4 h-4" />
-            Search Cases
-          </Link>
+          <div className="flex items-center gap-2 self-start">
+            <button
+              onClick={handleScoreAllCases}
+              disabled={isScoring || loading}
+              className="btn-primary gap-2"
+            >
+              {isScoring ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              {isScoring
+                ? (scoringMessage || 'Scoring...')
+                : hasScores
+                  ? 'Re-Score All Cases'
+                  : 'Score All Cases'}
+            </button>
+            <button
+              onClick={fetchCases}
+              disabled={loading}
+              className="btn-secondary gap-2"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+            <Link href="/search" className="btn-primary gap-2">
+              <Search className="w-4 h-4" />
+              Search Cases
+            </Link>
+          </div>
         </div>
+
+        {/* Refresh Banner */}
+        {showRefreshBanner && (
+          <div className="card p-4 mb-6 border-themis-200 bg-themis-50/50 animate-slide-down">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-themis-700">
+                Your preferences have changed. Refresh to update rankings.
+              </p>
+              <button
+                onClick={fetchCases}
+                className="btn-secondary text-sm gap-1.5 ml-4 flex-shrink-0"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Refresh
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* API Key Banner */}
         {hasApiKey === false && (
@@ -263,15 +385,27 @@ export default function DashboardPage() {
               </div>
             ) : (
               <div className="space-y-4">
-                {cases.map((c, i) => (
-                  <div
-                    key={c.id}
-                    className="animate-slide-up"
-                    style={{ animationDelay: `${Math.min(i * 40, 400)}ms`, animationFillMode: 'both' }}
-                  >
-                    <CaseCard caseData={c} />
-                  </div>
-                ))}
+                {cases.map((c, i) => {
+                  const scoreData = scoresMap.get(c.id);
+                  return (
+                    <div
+                      key={c.id}
+                      className="animate-slide-up"
+                      style={{ animationDelay: `${Math.min(i * 40, 400)}ms`, animationFillMode: 'both' }}
+                    >
+                      <CaseCard
+                        caseData={c}
+                        onReactionChange={handleReactionChange}
+                        score={scoreData?.score ?? null}
+                        scoreReasoning={scoreData?.reasoning ?? null}
+                        scoreSource={(scoreData?.source as 'cluster' | 'direct') ?? null}
+                        scoreStale={scoreData?.stale ?? false}
+                        caseViability={(c as any).case_viability ?? null}
+                        viabilityReasoning={(c as any).viability_reasoning ?? null}
+                      />
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

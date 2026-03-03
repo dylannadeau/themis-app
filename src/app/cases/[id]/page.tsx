@@ -8,7 +8,7 @@ import NarrativeFeedback from '@/components/NarrativeFeedback';
 import { CaseWithResult } from '@/lib/types';
 import {
   ArrowLeft, ThumbsUp, ThumbsDown, ExternalLink, Calendar,
-  Gavel, FileText, Loader2, MapPin, Scale, Users
+  Gavel, FileText, Loader2, MapPin, Scale, Users, Shield, RefreshCw
 } from 'lucide-react';
 
 function InfoRow({ icon: Icon, label, value }: { icon: any; label: string; value: string | null | undefined }) {
@@ -24,6 +24,69 @@ function InfoRow({ icon: Icon, label, value }: { icon: any; label: string; value
   );
 }
 
+interface ScoreData {
+  score: number;
+  reasoning: string | null;
+  source: string;
+  stale: boolean;
+}
+
+function ScoreBadgeLarge({ scoreData }: { scoreData: ScoreData | null }) {
+  if (!scoreData) return null;
+
+  const { score, source, stale, reasoning } = scoreData;
+  let colorClasses: string;
+
+  if (score >= 8) {
+    colorClasses = 'bg-emerald-50 text-emerald-700 border border-emerald-200/60';
+  } else if (score >= 5) {
+    colorClasses = 'bg-amber-50 text-amber-700 border border-amber-200/60';
+  } else {
+    colorClasses = 'bg-gray-100 text-gray-500 border border-gray-200/60';
+  }
+
+  const display = source === 'cluster' ? `~${score}` : `${score}`;
+
+  return (
+    <div className="flex items-center gap-3">
+      <span
+        className={`min-w-[3rem] h-9 flex items-center justify-center rounded-xl text-base font-bold ${colorClasses} ${stale ? 'opacity-60' : ''}`}
+        title={reasoning || `Relevance score: ${score}/10`}
+      >
+        {display}
+        {stale && <RefreshCw className="w-3 h-3 ml-1" />}
+      </span>
+      <div className="text-xs text-gray-500">
+        <p className="font-medium">Relevance: {score}/10</p>
+        {reasoning && <p className="mt-0.5 text-gray-400">{reasoning}</p>}
+      </div>
+    </div>
+  );
+}
+
+function ViabilityRow({ viability, reasoning }: { viability: string | null; reasoning: string | null }) {
+  if (!viability) return null;
+
+  const config: Record<string, { color: string; label: string }> = {
+    high: { color: 'text-emerald-700', label: 'High' },
+    medium: { color: 'text-amber-700', label: 'Medium' },
+    low: { color: 'text-gray-500', label: 'Low' },
+  };
+
+  const { color, label } = config[viability] || { color: 'text-gray-500', label: viability };
+
+  return (
+    <div className="flex items-start gap-3 py-2.5">
+      <Shield className="w-4 h-4 text-themis-400 flex-shrink-0 mt-0.5" />
+      <div>
+        <p className="text-xs text-gray-500 uppercase tracking-wider">Case Viability</p>
+        <p className={`text-sm font-medium mt-0.5 ${color}`}>{label}</p>
+        {reasoning && <p className="text-xs text-gray-400 mt-0.5">{reasoning}</p>}
+      </div>
+    </div>
+  );
+}
+
 export default function CaseDetailPage() {
   const params = useParams();
   const caseId = params.id as string;
@@ -34,6 +97,7 @@ export default function CaseDetailPage() {
   const [loading, setLoading] = useState(true);
   const [currentReaction, setCurrentReaction] = useState<1 | -1 | null>(null);
   const [isReacting, setIsReacting] = useState(false);
+  const [scoreData, setScoreData] = useState<ScoreData | null>(null);
 
   useEffect(() => {
     async function fetchCase() {
@@ -51,18 +115,27 @@ export default function CaseDetailPage() {
         return;
       }
 
-      const { data: reaction } = await supabase
-        .from('user_reactions')
-        .select('*')
-        .eq('user_id', session.user.id)
-        .eq('case_id', caseId)
-        .single();
+      const [reactionResult, scoreResult] = await Promise.all([
+        supabase
+          .from('user_reactions')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .eq('case_id', caseId)
+          .single(),
+        supabase
+          .from('user_case_scores')
+          .select('score, reasoning, source, stale')
+          .eq('user_id', session.user.id)
+          .eq('case_id', caseId)
+          .single(),
+      ]);
 
       setCaseData({
         ...data,
-        user_reaction: reaction || null,
+        user_reaction: reactionResult.data || null,
       });
-      setCurrentReaction(reaction?.reaction ?? null);
+      setCurrentReaction(reactionResult.data?.reaction ?? null);
+      setScoreData(scoreResult.data || null);
       setLoading(false);
     }
 
@@ -121,9 +194,14 @@ export default function CaseDetailPage() {
 
         {/* Case Header */}
         <div className="card p-6 mb-6">
-          <h1 className="font-display text-xl text-themis-900 leading-tight mb-4">
-            {caseData.case_name}
-          </h1>
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <h1 className="font-display text-xl text-themis-900 leading-tight">
+              {caseData.case_name}
+            </h1>
+            {scoreData && (
+              <ScoreBadgeLarge scoreData={scoreData} />
+            )}
+          </div>
 
           {/* Quick reaction buttons */}
           <div className="flex items-center gap-2 mb-4">
@@ -164,6 +242,10 @@ export default function CaseDetailPage() {
             <InfoRow icon={Users} label="Judge" value={caseData.judge} />
             <InfoRow icon={MapPin} label="Entity" value={caseData.entity} />
             <InfoRow icon={FileText} label="Demand" value={caseData.demand} />
+            <ViabilityRow
+              viability={(caseData as any).case_viability ?? null}
+              reasoning={(caseData as any).viability_reasoning ?? null}
+            />
           </div>
 
           {caseData.blaw_url && (

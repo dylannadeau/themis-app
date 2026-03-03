@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { ThumbsUp, ThumbsDown, ExternalLink, Calendar, Gavel, Bookmark, MessageSquare } from 'lucide-react';
+import { ThumbsUp, ThumbsDown, ExternalLink, Calendar, Gavel, Bookmark, MessageSquare, RefreshCw } from 'lucide-react';
 import { CaseWithResult } from '@/lib/types';
 import { ScoredCase } from '@/lib/personalization';
 import { createClient } from '@/lib/supabase-browser';
@@ -13,9 +13,91 @@ interface CaseCardProps {
   caseData: ScoredCase;
   onReactionChange?: (caseId: string, reaction: 1 | -1 | null) => void;
   onFavoriteChange?: (caseId: string, favorited: boolean) => void;
+  score?: number | null;
+  scoreReasoning?: string | null;
+  scoreSource?: 'cluster' | 'direct' | null;
+  scoreStale?: boolean;
+  caseViability?: 'high' | 'medium' | 'low' | null;
+  viabilityReasoning?: string | null;
 }
 
-export default function CaseCard({ caseData, onReactionChange, onFavoriteChange }: CaseCardProps) {
+function ScoreBadge({
+  score,
+  source,
+  stale,
+  reasoning,
+}: {
+  score?: number | null;
+  source?: 'cluster' | 'direct' | null;
+  stale?: boolean;
+  reasoning?: string | null;
+}) {
+  let colorClasses: string;
+  let display: string;
+
+  if (score == null) {
+    colorClasses = 'bg-gray-50 text-gray-300 border border-gray-200/60';
+    display = '\u2014';
+  } else if (score >= 8) {
+    colorClasses = 'bg-emerald-50 text-emerald-700 border border-emerald-200/60';
+    display = source === 'cluster' ? `~${score}` : `${score}`;
+  } else if (score >= 5) {
+    colorClasses = 'bg-amber-50 text-amber-700 border border-amber-200/60';
+    display = source === 'cluster' ? `~${score}` : `${score}`;
+  } else {
+    colorClasses = 'bg-gray-100 text-gray-500 border border-gray-200/60';
+    display = source === 'cluster' ? `~${score}` : `${score}`;
+  }
+
+  return (
+    <span
+      className={`min-w-[2.5rem] h-7 flex items-center justify-center rounded-lg text-sm font-bold flex-shrink-0 ${colorClasses} ${stale ? 'opacity-60' : ''}`}
+      title={reasoning || (score != null ? `Relevance score: ${score}/10` : 'Not scored yet')}
+    >
+      {display}
+      {stale && <RefreshCw className="w-3 h-3 ml-0.5" />}
+    </span>
+  );
+}
+
+function ViabilityBadge({
+  viability,
+  reasoning,
+}: {
+  viability?: 'high' | 'medium' | 'low' | null;
+  reasoning?: string | null;
+}) {
+  if (!viability) return null;
+
+  const config = {
+    high: { classes: 'bg-emerald-50 text-emerald-700 border border-emerald-200/60', label: 'High Viability' },
+    medium: { classes: 'bg-amber-50 text-amber-700 border border-amber-200/60', label: 'Medium Viability' },
+    low: { classes: 'bg-gray-100 text-gray-500 border border-gray-200/60', label: 'Low Viability' },
+  };
+
+  const { classes, label } = config[viability];
+
+  return (
+    <span
+      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium uppercase tracking-wider ${classes}`}
+      title={reasoning || label}
+    >
+      {label}
+    </span>
+  );
+}
+
+export default function CaseCard({
+  caseData,
+  onReactionChange,
+  onFavoriteChange,
+  score,
+  scoreReasoning,
+  scoreSource,
+  scoreStale,
+  caseViability,
+  viabilityReasoning,
+}: CaseCardProps) {
   const [currentReaction, setCurrentReaction] = useState<1 | -1 | null>(
     caseData.user_reaction?.reaction ?? null
   );
@@ -91,6 +173,12 @@ export default function CaseCard({ caseData, onReactionChange, onFavoriteChange 
             {caseData.case_name}
           </Link>
         </div>
+        <ScoreBadge
+          score={score}
+          source={scoreSource}
+          stale={scoreStale}
+          reasoning={scoreReasoning}
+        />
       </div>
 
       {/* Meta info */}
@@ -110,6 +198,7 @@ export default function CaseCard({ caseData, onReactionChange, onFavoriteChange 
             {new Date(caseData.filed).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
           </span>
         )}
+        <ViabilityBadge viability={caseViability} reasoning={viabilityReasoning} />
       </div>
 
       {/* Summary snippet */}

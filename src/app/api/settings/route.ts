@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase-server';
 import { encrypt, maskApiKey } from '@/lib/encryption';
+import { markScoresStale } from '@/lib/preference-utils';
 
 export async function GET(request: NextRequest) {
   try {
@@ -101,6 +102,11 @@ export async function PUT(request: NextRequest) {
         { error: `Failed to save settings: ${error.message}` },
         { status: 500 }
       );
+    }
+
+    // Mark scores stale when bio changes (bio affects relevance scoring)
+    if (bio_text !== undefined) {
+      await markScoresStale(supabase, userId);
     }
 
     return NextResponse.json({

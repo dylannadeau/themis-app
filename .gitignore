@@ -36,3 +36,4 @@ next-env.d.ts
 # Admin-only files
 supabase/
 sync_to_supabase.py
+migrations/
