@@ -29,7 +29,7 @@ interface ViabilityData {
   viability_reasoning: string | null;
 }
 
-const PAGE_SIZE = 1000;
+const PAGE_SIZE = 50;
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -62,6 +62,20 @@ export default function DashboardPage() {
     total: number;
   } | null>(null);
   const scoringCancelledRef = useRef(false);
+
+  // Pagination state
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [totalCount, setTotalCount] = useState<number | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  // Refs for user data (available to loadMore without refetch)
+  const reactionsMapRef = useRef<Map<string, any>>(new Map());
+  const favoritesSetRef = useRef<Set<string>>(new Set());
+  const profileRef = useRef<PreferenceProfileEntry[]>([]);
+  const weightsRef = useRef<DimensionWeight[]>([]);
+  const bioTextRef = useRef<string | null>(null);
 
   // Interaction sets — refs for mutation without re-render, state mirror for counts
   const likedIdsRef = useRef<Set<string>>(new Set());
@@ -136,9 +150,31 @@ export default function DashboardPage() {
     });
   }, []);
 
+  // Helper to build a base cases query with current filters applied
+  const buildCasesQuery = useCallback((selectClause: string, opts?: { count?: 'exact'; head?: boolean }) => {
+    let query = supabase
+      .from('cases')
+      .select(selectClause, opts as any)
+      .not('complaint_summary', 'is', null)
+      .neq('complaint_summary', '')
+      .neq('complaint_summary', 'No complaint found')
+      .neq('complaint_summary', 'ERROR')
+      .neq('complaint_summary', 'Failed to fetch pleadings.');
+
+    if (filters.dateRange.from) query = query.gte('filed', filters.dateRange.from);
+    if (filters.dateRange.to) query = query.lte('filed', filters.dateRange.to);
+    if (filters.sourceSearch.trim()) query = query.ilike('source', `%${filters.sourceSearch.trim()}%`);
+    if (filters.natureOfSuit.length > 0) query = query.in('nature_of_suit', filters.natureOfSuit);
+
+    return query;
+  }, [supabase, filters]);
+
   const fetchCases = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setPage(0);
+    setHasMore(true);
+    setTotalCount(null);
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -147,51 +183,12 @@ export default function DashboardPage() {
         return;
       }
 
-      // Paginated fetch: get all valid cases
-      let allCasesData: any[] = [];
-      let from = 0;
-      let hasMore = true;
-
-      while (hasMore) {
-        let query = supabase
-          .from('cases')
-          .select('*')
-          .not('complaint_summary', 'is', null)
-          .neq('complaint_summary', '')
-          .neq('complaint_summary', 'No complaint found')
-          .neq('complaint_summary', 'ERROR')
-          .neq('complaint_summary', 'Failed to fetch pleadings.')
+      // Fetch count, first page, and all user data in parallel
+      const [countResult, casesResult, reactionsResult, favoritesResult, narrativesResult, profileResult, weightsResult, settingsResult, scoresResult, viabilityResult] = await Promise.all([
+        buildCasesQuery('id', { count: 'exact', head: true }),
+        buildCasesQuery('*')
           .order('filed', { ascending: false })
-          .range(from, from + PAGE_SIZE - 1);
-
-        if (filters.dateRange.from) {
-          query = query.gte('filed', filters.dateRange.from);
-        }
-        if (filters.dateRange.to) {
-          query = query.lte('filed', filters.dateRange.to);
-        }
-        if (filters.sourceSearch.trim()) {
-          query = query.ilike('source', `%${filters.sourceSearch.trim()}%`);
-        }
-        if (filters.natureOfSuit.length > 0) {
-          query = query.in('nature_of_suit', filters.natureOfSuit);
-        }
-
-        const { data: casesData, error: casesError } = await query;
-        if (casesError) throw casesError;
-
-        const batch = casesData || [];
-        allCasesData = allCasesData.concat(batch);
-
-        if (batch.length < PAGE_SIZE) {
-          hasMore = false;
-        } else {
-          from += PAGE_SIZE;
-        }
-      }
-
-      // Fetch user data, scores, and viability in parallel
-      const [reactionsResult, favoritesResult, narrativesResult, profileResult, weightsResult, settingsResult, scoresResult, viabilityResult] = await Promise.all([
+          .range(0, PAGE_SIZE - 1),
         supabase
           .from('user_reactions')
           .select('*')
@@ -221,13 +218,23 @@ export default function DashboardPage() {
         fetchViability(),
       ]);
 
+      if (casesResult.error) throw casesResult.error;
+
+      const total = countResult.count ?? 0;
+      setTotalCount(total);
+
+      const casesData = casesResult.data || [];
+
+      // Store user data in refs for loadMore
       const reactions = reactionsResult.data || [];
-      const reactionsMap = new Map(
-        reactions.map((r: any) => [r.case_id, r])
-      );
-      const favoritesSet = new Set(
-        (favoritesResult.data || []).map((f: any) => f.case_id)
-      );
+      const reactionsMap = new Map(reactions.map((r: any) => [r.case_id, r]));
+      const favoritesSet = new Set((favoritesResult.data || []).map((f: any) => f.case_id));
+
+      reactionsMapRef.current = reactionsMap;
+      favoritesSetRef.current = favoritesSet;
+      profileRef.current = (profileResult.data || []) as PreferenceProfileEntry[];
+      weightsRef.current = (weightsResult.data || []) as DimensionWeight[];
+      bioTextRef.current = settingsResult.data?.bio_text || null;
 
       // Build interaction sets
       const liked = new Set(reactions.filter((r: any) => r.reaction === 1).map((r: any) => r.case_id as string));
@@ -241,7 +248,7 @@ export default function DashboardPage() {
       interactedIdsRef.current = interacted;
 
       // Merge cases with reactions and favorites
-      let merged: CaseWithResult[] = allCasesData.map((c: any) => ({
+      let merged: CaseWithResult[] = casesData.map((c: any) => ({
         ...c,
         user_reaction: reactionsMap.get(c.id) || null,
         user_favorite: favoritesSet.has(c.id),
@@ -264,30 +271,82 @@ export default function DashboardPage() {
       // Rerank using profile + bio
       const reranked = rerankWithProfile(
         merged,
-        (profileResult.data || []) as PreferenceProfileEntry[],
-        (weightsResult.data || []) as DimensionWeight[],
+        profileRef.current,
+        weightsRef.current,
         bioText
       );
 
-      // Sort: scores first, then filed date
+      // Sort initial batch: scores first, then filed date
       const sorted = sortCases(reranked, scoresResult);
 
       setAllCases(sorted);
-      setCases(filterByTab(sorted, activeTab));
-      recalcCounts(sorted);
       setShowRefreshBanner(false);
+      setHasMore(casesData.length >= PAGE_SIZE);
 
     } catch (err: any) {
       setError(err.message || 'Failed to load cases');
     } finally {
       setLoading(false);
     }
-  }, [filters, router, supabase, setupDismissed, fetchScores, fetchViability, activeTab, filterByTab, recalcCounts, sortCases]);
+  }, [filters, router, supabase, setupDismissed, fetchScores, fetchViability, sortCases, buildCasesQuery]);
 
-  // Re-filter when tab changes (without refetching)
+  const loadMoreCases = useCallback(async () => {
+    if (!hasMore || isLoadingMore || loading) return;
+
+    setIsLoadingMore(true);
+    const nextPage = page + 1;
+    const from = nextPage * PAGE_SIZE;
+
+    try {
+      const { data: casesData, error: casesError } = await buildCasesQuery('*')
+        .order('filed', { ascending: false })
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (casesError) throw casesError;
+
+      const batch = casesData || [];
+
+      if (batch.length === 0) {
+        setHasMore(false);
+        return;
+      }
+
+      // Merge with user data from refs
+      let merged: CaseWithResult[] = batch.map((c: any) => ({
+        ...c,
+        user_reaction: reactionsMapRef.current.get(c.id) || null,
+        user_favorite: favoritesSetRef.current.has(c.id),
+      }));
+
+      if (filters.favoritesOnly) {
+        merged = merged.filter((c) => c.user_favorite);
+      }
+
+      // Rerank new batch using stored profile data
+      const reranked = rerankWithProfile(
+        merged,
+        profileRef.current,
+        weightsRef.current,
+        bioTextRef.current
+      );
+
+      // Append to existing cases (no global re-sort — preserves browse position)
+      setAllCases(prev => [...prev, ...reranked]);
+      setPage(nextPage);
+      setHasMore(batch.length >= PAGE_SIZE);
+
+    } catch (err: any) {
+      console.error('Failed to load more cases:', err);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [hasMore, isLoadingMore, loading, page, filters.favoritesOnly, buildCasesQuery]);
+
+  // Re-filter when tab or loaded cases change
   useEffect(() => {
     setCases(filterByTab(allCases, activeTab));
-  }, [activeTab, allCases, filterByTab]);
+    recalcCounts(allCases);
+  }, [activeTab, allCases, filterByTab, recalcCounts]);
 
   useEffect(() => {
     async function fetchFilterOptions() {
@@ -424,15 +483,23 @@ export default function DashboardPage() {
     }
   }, [allCases, scoresMap, viabilityMap, supabase, showToast]);
 
-  // Re-sort cases when scoresMap changes (scores arrive during background scoring)
+  // IntersectionObserver for infinite scroll
   useEffect(() => {
-    if (allCases.length > 0 && scoresMap.size > 0) {
-      const sorted = sortCases(allCases, scoresMap);
-      setAllCases(sorted);
-      setCases(filterByTab(sorted, activeTab));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scoresMap]);
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          loadMoreCases();
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadMoreCases]);
 
   const handleStartScoring = (options: ScoringOptions) => {
     setShowScoringModal(false);
@@ -522,7 +589,7 @@ export default function DashboardPage() {
             </h1>
             {!loading && (
               <p className="text-sm text-gray-500 mt-1">
-                Showing {cases.length}{cases.length !== allCases.length ? ` of ${allCases.length}` : ''} cases
+                Showing {cases.length}{totalCount !== null && totalCount !== cases.length ? ` of ${totalCount}` : ''} cases
               </p>
             )}
           </div>
@@ -719,6 +786,21 @@ export default function DashboardPage() {
                     </div>
                   );
                 })}
+
+                {/* Scroll sentinel for infinite scroll */}
+                <div ref={sentinelRef} className="h-1" />
+
+                {/* Loading spinner while fetching more */}
+                {isLoadingMore && (
+                  <div className="flex items-center justify-center py-6">
+                    <Loader2 className="w-5 h-5 text-themis-500 animate-spin" />
+                  </div>
+                )}
+
+                {/* End of list indicator */}
+                {!hasMore && !isLoadingMore && (
+                  <p className="text-center text-sm text-gray-400 py-6">No more cases</p>
+                )}
               </div>
             )}
           </div>
