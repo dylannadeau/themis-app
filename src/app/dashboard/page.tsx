@@ -227,8 +227,27 @@ export default function DashboardPage() {
       reviewedIdsRef.current = reviewed;
       interactedIdsRef.current = interacted;
 
+      // Find interacted case IDs not in the initial page
+      const loadedIds = new Set(casesData.map((c: any) => c.id as string));
+      const missingIds = [...interacted].filter((id) => !loadedIds.has(id));
+
+      // Fetch missing interacted cases so they always appear in tabs
+      let extraCases: any[] = [];
+      if (missingIds.length > 0) {
+        const batches = chunk(missingIds, 50);
+        for (const batch of batches) {
+          const { data } = await supabase
+            .from('cases')
+            .select('*')
+            .in('id', batch);
+          if (data) extraCases.push(...data);
+        }
+      }
+
+      const allCasesData = [...casesData, ...extraCases];
+
       // Merge cases with reactions and favorites
-      let merged: CaseWithResult[] = casesData.map((c: any) => ({
+      let merged: CaseWithResult[] = allCasesData.map((c: any) => ({
         ...c,
         user_reaction: reactionsMap.get(c.id) || null,
         user_favorite: favoritesSet.has(c.id),
