@@ -9,6 +9,14 @@ import { ScoredCase } from '@/lib/personalization';
 import { Search as SearchIcon, Loader2, Sparkles, AlertCircle, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
 
+interface ScoreData {
+  case_id: string;
+  score: number;
+  reasoning: string | null;
+  source: string;
+  stale: boolean;
+}
+
 export default function SearchPage() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<ScoredCase[]>([]);
@@ -17,6 +25,8 @@ export default function SearchPage() {
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
+  const [scoresMap, setScoresMap] = useState<Map<string, ScoreData>>(new Map());
+  const [isAutoScoring, setIsAutoScoring] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const supabase = createClient();
@@ -37,6 +47,63 @@ export default function SearchPage() {
     checkKey();
   }, [supabase, router]);
 
+  const fetchAndScoreResults = async (caseResults: ScoredCase[]) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session || caseResults.length === 0) return;
+
+    const caseIds = caseResults.map((c) => c.id);
+
+    // Fetch existing scores
+    const { data: existingScores } = await supabase
+      .from('user_case_scores')
+      .select('case_id, score, reasoning, source, stale')
+      .eq('user_id', session.user.id)
+      .in('case_id', caseIds);
+
+    const existingMap = new Map(
+      (existingScores || []).map((s: ScoreData) => [s.case_id, s])
+    );
+    setScoresMap(existingMap);
+
+    // Find unscored cases
+    const unscoredIds = caseIds.filter((id) => !existingMap.has(id));
+
+    if (unscoredIds.length > 0 && unscoredIds.length <= 10) {
+      setIsAutoScoring(true);
+      try {
+        const scoreResponse = await fetch('/api/score-cases', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ mode: 'direct', case_ids: unscoredIds }),
+        });
+
+        if (scoreResponse.ok) {
+          const scoreResult = await scoreResponse.json();
+          if (scoreResult.scores) {
+            const newMap = new Map(existingMap);
+            for (const s of scoreResult.scores) {
+              newMap.set(s.case_id, {
+                case_id: s.case_id,
+                score: s.score,
+                reasoning: s.reasoning,
+                source: 'direct',
+                stale: false,
+              });
+            }
+            setScoresMap(newMap);
+          }
+        }
+      } catch (err) {
+        console.error('Auto-scoring failed:', err);
+      } finally {
+        setIsAutoScoring(false);
+      }
+    }
+  };
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
@@ -46,6 +113,7 @@ export default function SearchPage() {
     setSynthesis(null);
     setResults([]);
     setSearched(true);
+    setScoresMap(new Map());
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -66,8 +134,12 @@ export default function SearchPage() {
       }
 
       const data = await response.json();
-      setResults(data.cases || []);
+      const caseResults = data.cases || [];
+      setResults(caseResults);
       setSynthesis(data.synthesis || null);
+
+      // Fetch scores and auto-score unscored results
+      fetchAndScoreResults(caseResults);
     } catch (err: any) {
       setError(err.message || 'Search failed');
     } finally {
@@ -180,19 +252,38 @@ export default function SearchPage() {
         ) : (
           <div className="space-y-4">
             {results.length > 0 && (
-              <p className="text-sm text-gray-500 mb-2">
-                {results.length} case{results.length !== 1 ? 's' : ''} found
-              </p>
-            )}
-            {results.map((c, i) => (
-              <div
-                key={c.id}
-                className="animate-slide-up"
-                style={{ animationDelay: `${Math.min(i * 50, 500)}ms`, animationFillMode: 'both' }}
-              >
-                <CaseCard caseData={c} />
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm text-gray-500">
+                  {results.length} case{results.length !== 1 ? 's' : ''} found
+                </p>
+                {isAutoScoring && (
+                  <p className="text-xs text-themis-500 flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Scoring results...
+                  </p>
+                )}
               </div>
-            ))}
+            )}
+            {results.map((c, i) => {
+              const scoreData = scoresMap.get(c.id);
+              return (
+                <div
+                  key={c.id}
+                  className="animate-slide-up"
+                  style={{ animationDelay: `${Math.min(i * 50, 500)}ms`, animationFillMode: 'both' }}
+                >
+                  <CaseCard
+                    caseData={c}
+                    score={scoreData?.score ?? null}
+                    scoreReasoning={scoreData?.reasoning ?? null}
+                    scoreSource={(scoreData?.source as 'cluster' | 'direct') ?? null}
+                    scoreStale={scoreData?.stale ?? false}
+                    caseViability={(c as any).case_viability ?? null}
+                    viabilityReasoning={(c as any).viability_reasoning ?? null}
+                  />
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

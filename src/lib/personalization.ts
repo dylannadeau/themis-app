@@ -369,25 +369,3 @@ export function rerankWithProfile(
   return blended.sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
 }
 
-// ============================================
-// LEGACY: Keep old exports for backward compat
-// ============================================
-
-export interface UserPreferenceLegacy {
-  id: number;
-  user_id: string;
-  feature_key: string;
-  feature_value: string;
-  weight: number;
-}
-
-export function extractCaseFeatures(caseData: CaseWithResult): { key: string; value: string }[] {
-  return [];
-}
-
-export function rerankCases(
-  cases: CaseWithResult[],
-  preferences: UserPreferenceLegacy[]
-): CaseWithResult[] {
-  return cases;
-}

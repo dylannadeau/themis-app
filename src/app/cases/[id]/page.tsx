@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase-browser';
 import AppShell from '@/components/AppShell';
@@ -8,7 +8,7 @@ import NarrativeFeedback from '@/components/NarrativeFeedback';
 import { CaseWithResult } from '@/lib/types';
 import {
   ArrowLeft, ThumbsUp, ThumbsDown, ExternalLink, Calendar,
-  Gavel, FileText, Loader2, MapPin, Scale, Users
+  Gavel, FileText, Loader2, MapPin, Scale, Users, Shield, RefreshCw
 } from 'lucide-react';
 
 function InfoRow({ icon: Icon, label, value }: { icon: any; label: string; value: string | null | undefined }) {
@@ -24,6 +24,82 @@ function InfoRow({ icon: Icon, label, value }: { icon: any; label: string; value
   );
 }
 
+interface ScoreData {
+  score: number;
+  reasoning: string | null;
+  source: string;
+  stale: boolean;
+}
+
+function ScoreBadgeLarge({ scoreData, loading }: { scoreData: ScoreData | null; loading?: boolean }) {
+  if (loading) {
+    return (
+      <div className="flex items-center gap-3">
+        <span className="min-w-[3rem] h-9 flex items-center justify-center rounded-xl bg-gray-100 border border-gray-200/60 animate-pulse">
+          <Loader2 className="w-4 h-4 text-gray-300 animate-spin" />
+        </span>
+        <div className="text-xs text-gray-400">
+          <p className="font-medium">Scoring...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!scoreData) return null;
+
+  const { score, source, stale, reasoning } = scoreData;
+  let colorClasses: string;
+
+  if (score >= 8) {
+    colorClasses = 'bg-emerald-50 text-emerald-700 border border-emerald-200/60';
+  } else if (score >= 5) {
+    colorClasses = 'bg-amber-50 text-amber-700 border border-amber-200/60';
+  } else {
+    colorClasses = 'bg-gray-100 text-gray-500 border border-gray-200/60';
+  }
+
+  const display = source === 'cluster' ? `~${score}` : `${score}`;
+
+  return (
+    <div className="flex items-center gap-3 animate-fade-in">
+      <span
+        className={`min-w-[3rem] h-9 flex items-center justify-center rounded-xl text-base font-bold ${colorClasses} ${stale ? 'opacity-60' : ''}`}
+        title={reasoning || `Relevance score: ${score}/10`}
+      >
+        {display}
+        {stale && <RefreshCw className="w-3 h-3 ml-1" />}
+      </span>
+      <div className="text-xs text-gray-500">
+        <p className="font-medium">Relevance: {score}/10</p>
+        {reasoning && <p className="mt-0.5 text-gray-400">{reasoning}</p>}
+      </div>
+    </div>
+  );
+}
+
+function ViabilityRow({ viability, reasoning }: { viability: string | null; reasoning: string | null }) {
+  if (!viability) return null;
+
+  const config: Record<string, { color: string; label: string }> = {
+    high: { color: 'text-emerald-700', label: 'High' },
+    medium: { color: 'text-amber-700', label: 'Medium' },
+    low: { color: 'text-gray-500', label: 'Low' },
+  };
+
+  const { color, label } = config[viability] || { color: 'text-gray-500', label: viability };
+
+  return (
+    <div className="flex items-start gap-3 py-2.5">
+      <Shield className="w-4 h-4 text-themis-400 flex-shrink-0 mt-0.5" />
+      <div>
+        <p className="text-xs text-gray-500 uppercase tracking-wider">Case Viability</p>
+        <p className={`text-sm font-medium mt-0.5 ${color}`}>{label}</p>
+        {reasoning && <p className="text-xs text-gray-400 mt-0.5">{reasoning}</p>}
+      </div>
+    </div>
+  );
+}
+
 export default function CaseDetailPage() {
   const params = useParams();
   const caseId = params.id as string;
@@ -34,6 +110,47 @@ export default function CaseDetailPage() {
   const [loading, setLoading] = useState(true);
   const [currentReaction, setCurrentReaction] = useState<1 | -1 | null>(null);
   const [isReacting, setIsReacting] = useState(false);
+  const [scoreData, setScoreData] = useState<ScoreData | null>(null);
+  const [scoreLoading, setScoreLoading] = useState(false);
+  const [viabilityData, setViabilityData] = useState<{ case_viability: string | null; viability_reasoning: string | null }>({ case_viability: null, viability_reasoning: null });
+  const autoScoreTriggered = useRef(false);
+
+  const triggerAutoScore = useCallback(async () => {
+    if (autoScoreTriggered.current) return;
+    autoScoreTriggered.current = true;
+
+    setScoreLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const response = await fetch('/api/score-cases', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ mode: 'direct', case_ids: [caseId] }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        if (result.scores && result.scores.length > 0) {
+          const s = result.scores[0];
+          setScoreData({
+            score: s.score,
+            reasoning: s.reasoning,
+            source: 'direct',
+            stale: false,
+          });
+        }
+      }
+    } catch {
+      // Silently fail — auto-scoring is best-effort
+    } finally {
+      setScoreLoading(false);
+    }
+  }, [caseId, supabase]);
 
   useEffect(() => {
     async function fetchCase() {
@@ -51,23 +168,50 @@ export default function CaseDetailPage() {
         return;
       }
 
-      const { data: reaction } = await supabase
-        .from('user_reactions')
-        .select('*')
-        .eq('user_id', session.user.id)
-        .eq('case_id', caseId)
-        .single();
+      const [reactionResult, scoreResult, viabilityResult] = await Promise.all([
+        supabase
+          .from('user_reactions')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .eq('case_id', caseId)
+          .single(),
+        supabase
+          .from('user_case_scores')
+          .select('score, reasoning, source, stale')
+          .eq('user_id', session.user.id)
+          .eq('case_id', caseId)
+          .single(),
+        supabase
+          .from('consultant_results')
+          .select('case_viability, viability_reasoning')
+          .eq('case_id', caseId)
+          .single(),
+      ]);
 
       setCaseData({
         ...data,
-        user_reaction: reaction || null,
+        user_reaction: reactionResult.data || null,
       });
-      setCurrentReaction(reaction?.reaction ?? null);
+      setCurrentReaction(reactionResult.data?.reaction ?? null);
+
+      const fetchedScore = scoreResult.data || null;
+      setScoreData(fetchedScore);
+
+      setViabilityData({
+        case_viability: viabilityResult.data?.case_viability ?? null,
+        viability_reasoning: viabilityResult.data?.viability_reasoning ?? null,
+      });
+
       setLoading(false);
+
+      // Auto-score if no score or stale
+      if (!fetchedScore || fetchedScore.stale) {
+        triggerAutoScore();
+      }
     }
 
     fetchCase();
-  }, [caseId, router, supabase]);
+  }, [caseId, router, supabase, triggerAutoScore]);
 
   const handleReaction = async (reaction: 1 | -1) => {
     setIsReacting(true);
@@ -121,9 +265,12 @@ export default function CaseDetailPage() {
 
         {/* Case Header */}
         <div className="card p-6 mb-6">
-          <h1 className="font-display text-xl text-themis-900 leading-tight mb-4">
-            {caseData.case_name}
-          </h1>
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <h1 className="font-display text-xl text-themis-900 leading-tight">
+              {caseData.case_name}
+            </h1>
+            <ScoreBadgeLarge scoreData={scoreData} loading={scoreLoading} />
+          </div>
 
           {/* Quick reaction buttons */}
           <div className="flex items-center gap-2 mb-4">
@@ -164,6 +311,10 @@ export default function CaseDetailPage() {
             <InfoRow icon={Users} label="Judge" value={caseData.judge} />
             <InfoRow icon={MapPin} label="Entity" value={caseData.entity} />
             <InfoRow icon={FileText} label="Demand" value={caseData.demand} />
+            <ViabilityRow
+              viability={viabilityData.case_viability}
+              reasoning={viabilityData.viability_reasoning}
+            />
           </div>
 
           {caseData.blaw_url && (
