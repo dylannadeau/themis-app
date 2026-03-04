@@ -20,23 +20,8 @@ export interface Case {
   complaint_summary: string | null;
   blaw_url: string | null;
   date_logged: string;
-}
-
-export interface ConsultantResult {
-  id: number;
-  case_id: string;
   case_viability: 'high' | 'medium' | 'low' | null;
   viability_reasoning: string | null;
-  person_1: string | null;
-  score_1: number | null;
-  explanation_1: string | null;
-  person_2: string | null;
-  score_2: number | null;
-  explanation_2: string | null;
-  person_3: string | null;
-  score_3: number | null;
-  explanation_3: string | null;
-  created_at: string;
 }
 
 export interface UserReaction {
@@ -45,14 +30,6 @@ export interface UserReaction {
   case_id: string;
   reaction: 1 | -1;
   created_at: string;
-}
-
-export interface UserPreference {
-  id: number;
-  user_id: string;
-  feature_key: string;
-  feature_value: string;
-  weight: number;
 }
 
 export interface UserSettings {
@@ -64,7 +41,6 @@ export interface UserSettings {
 }
 
 export interface CaseWithResult extends Case {
-  consultant_results?: ConsultantResult;
   user_reaction?: UserReaction | null;
   user_favorite?: boolean;
   relevance_score?: number;

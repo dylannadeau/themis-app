@@ -23,12 +23,6 @@ interface ScoreData {
   stale: boolean;
 }
 
-interface ViabilityData {
-  case_id: string;
-  case_viability: 'high' | 'medium' | 'low' | null;
-  viability_reasoning: string | null;
-}
-
 const PAGE_SIZE = 50;
 
 function chunk<T>(arr: T[], size: number): T[][] {
@@ -51,7 +45,6 @@ export default function DashboardPage() {
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [setupDismissed, setSetupDismissed] = useState(false);
   const [scoresMap, setScoresMap] = useState<Map<string, ScoreData>>(new Map());
-  const [viabilityMap, setViabilityMap] = useState<Map<string, ViabilityData>>(new Map());
   const [showRefreshBanner, setShowRefreshBanner] = useState(false);
   const [activeTab, setActiveTab] = useState<InteractionTab>('new');
   const [removingCaseIds, setRemovingCaseIds] = useState<Set<string>>(new Set());
@@ -98,18 +91,6 @@ export default function DashboardPage() {
       (scores || []).map((s: ScoreData) => [s.case_id, s])
     );
     setScoresMap(map);
-    return map;
-  }, [supabase]);
-
-  const fetchViability = useCallback(async () => {
-    const { data } = await supabase
-      .from('consultant_results')
-      .select('case_id, case_viability, viability_reasoning');
-
-    const map = new Map(
-      (data || []).map((v: ViabilityData) => [v.case_id, v])
-    );
-    setViabilityMap(map);
     return map;
   }, [supabase]);
 
@@ -184,7 +165,7 @@ export default function DashboardPage() {
       }
 
       // Fetch count, first page, and all user data in parallel
-      const [countResult, casesResult, reactionsResult, favoritesResult, narrativesResult, profileResult, weightsResult, settingsResult, scoresResult, viabilityResult] = await Promise.all([
+      const [countResult, casesResult, reactionsResult, favoritesResult, narrativesResult, profileResult, weightsResult, settingsResult, scoresResult] = await Promise.all([
         buildCasesQuery('id', { count: 'exact', head: true }),
         buildCasesQuery('*')
           .order('filed', { ascending: false })
@@ -215,7 +196,6 @@ export default function DashboardPage() {
           .eq('user_id', session.user.id)
           .single(),
         fetchScores(session.user.id),
-        fetchViability(),
       ]);
 
       if (casesResult.error) throw casesResult.error;
@@ -247,8 +227,27 @@ export default function DashboardPage() {
       reviewedIdsRef.current = reviewed;
       interactedIdsRef.current = interacted;
 
+      // Find interacted case IDs not in the initial page
+      const loadedIds = new Set(casesData.map((c: any) => c.id as string));
+      const missingIds = [...interacted].filter((id) => !loadedIds.has(id));
+
+      // Fetch missing interacted cases so they always appear in tabs
+      let extraCases: any[] = [];
+      if (missingIds.length > 0) {
+        const batches = chunk(missingIds, 50);
+        for (const batch of batches) {
+          const { data } = await supabase
+            .from('cases')
+            .select('*')
+            .in('id', batch);
+          if (data) extraCases.push(...data);
+        }
+      }
+
+      const allCasesData = [...casesData, ...extraCases];
+
       // Merge cases with reactions and favorites
-      let merged: CaseWithResult[] = casesData.map((c: any) => ({
+      let merged: CaseWithResult[] = allCasesData.map((c: any) => ({
         ...c,
         user_reaction: reactionsMap.get(c.id) || null,
         user_favorite: favoritesSet.has(c.id),
@@ -288,7 +287,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [filters, router, supabase, setupDismissed, fetchScores, fetchViability, sortCases, buildCasesQuery]);
+  }, [filters, router, supabase, setupDismissed, fetchScores, sortCases, buildCasesQuery]);
 
   const loadMoreCases = useCallback(async () => {
     if (!hasMore || isLoadingMore || loading) return;
@@ -417,8 +416,7 @@ export default function DashboardPage() {
       !options.dateRange?.from && !options.dateRange?.to && !options.keyword;
 
     const targetCases = allCases.filter((c) => {
-      const viabilityData = viabilityMap.get(c.id);
-      const caseViability = viabilityData?.case_viability || null;
+      const caseViability = (c as any).case_viability || null;
 
       // Viability filter
       if (caseViability && !options.viability.includes(caseViability)) return false;
@@ -465,7 +463,7 @@ export default function DashboardPage() {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`,
           },
-          body: JSON.stringify({ mode: 'direct', case_ids: batch }),
+          body: JSON.stringify({ case_ids: batch }),
         });
 
         if (!response.ok) {
@@ -505,7 +503,7 @@ export default function DashboardPage() {
     } finally {
       setScoringProgress(null);
     }
-  }, [allCases, scoresMap, viabilityMap, supabase, showToast]);
+  }, [allCases, scoresMap, supabase, showToast]);
 
   const handleStartScoring = (options: ScoringOptions) => {
     setShowScoringModal(false);
@@ -545,10 +543,10 @@ export default function DashboardPage() {
   const caseStats: CaseStats = useMemo(() => {
     let high = 0, medium = 0, low = 0;
     for (const c of allCases) {
-      const v = viabilityMap.get(c.id);
-      if (v?.case_viability === 'high') high++;
-      else if (v?.case_viability === 'medium') medium++;
-      else if (v?.case_viability === 'low') low++;
+      const viability = (c as any).case_viability;
+      if (viability === 'high') high++;
+      else if (viability === 'medium') medium++;
+      else if (viability === 'low') low++;
     }
     let alreadyScored = 0;
     let stale = 0;
@@ -567,7 +565,7 @@ export default function DashboardPage() {
       alreadyScored,
       stale,
     };
-  }, [allCases, viabilityMap, scoresMap]);
+  }, [allCases, scoresMap]);
 
   const progressPercent = scoringProgress
     ? Math.round((scoringProgress.completed / Math.max(1, scoringProgress.total)) * 100)
@@ -766,7 +764,6 @@ export default function DashboardPage() {
               <div className="space-y-4">
                 {cases.map((c, i) => {
                   const scoreData = scoresMap.get(c.id);
-                  const viabilityData = viabilityMap.get(c.id);
                   const isRemoving = removingCaseIds.has(c.id);
                   return (
                     <div
@@ -784,10 +781,10 @@ export default function DashboardPage() {
                         onInteraction={handleCardInteraction}
                         score={scoreData?.score ?? null}
                         scoreReasoning={scoreData?.reasoning ?? null}
-                        scoreSource={(scoreData?.source as 'cluster' | 'direct') ?? null}
+                        scoreSource={scoreData?.source ?? null}
                         scoreStale={scoreData?.stale ?? false}
-                        caseViability={viabilityData?.case_viability ?? null}
-                        viabilityReasoning={viabilityData?.viability_reasoning ?? null}
+                        caseViability={(c as any).case_viability ?? null}
+                        viabilityReasoning={(c as any).viability_reasoning ?? null}
                       />
                     </div>
                   );

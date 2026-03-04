@@ -26,31 +26,41 @@ Comprehensive guide for AI assistants working on this codebase.
 src/
 ├── app/
 │   ├── api/
+│   │   ├── admin/
+│   │   │   └── generate-embeddings/route.ts  # POST: generate case chunk embeddings
+│   │   ├── narrative/route.ts    # GET/POST: narrative save + Gemini signal extraction
+│   │   ├── preferences/route.ts  # GET/DELETE/PATCH: manage preference profile entries
+│   │   ├── react/route.ts        # POST: like/dislike tracking + preference signal creation
+│   │   ├── score-cases/route.ts  # POST: Gemini-powered case relevance scoring
 │   │   ├── search/route.ts       # POST: vector search → rerank → Gemini synthesis
-│   │   ├── react/route.ts        # POST: like/dislike tracking + preference weight update
-│   │   ├── settings/route.ts     # GET/PUT: API key (encrypted), model, bio
-│   │   └── narrative/route.ts    # GET/POST: narrative save + Gemini signal extraction
+│   │   └── settings/route.ts     # GET/PUT: API key (encrypted), model, bio
 │   ├── auth/page.tsx             # Sign in / sign up page
-│   ├── dashboard/page.tsx        # Personalized case feed with filters
-│   ├── search/page.tsx           # RAG search interface
+│   ├── cases/[id]/page.tsx       # Case detail, viability, reactions, narrative feedback
+│   ├── dashboard/page.tsx        # Personalized case feed with filters and interaction tabs
+│   ├── preferences/page.tsx      # View/edit preference profile, dimension weights
+│   ├── search/page.tsx           # RAG search interface with auto-scoring
 │   ├── settings/page.tsx         # BYOK key, model selection, bio upload
-│   ├── cases/[id]/page.tsx       # Case detail, consultant rankings, reactions
 │   ├── layout.tsx                # Root layout (fonts, globals)
 │   ├── page.tsx                  # Root → redirects to /dashboard
 │   ├── globals.css               # Tailwind base + custom CSS
 │   └── middleware.ts             # IMPORTANT: this is unused (see src/middleware.ts)
 ├── components/
 │   ├── AppShell.tsx              # Sticky nav, mobile menu, sign-out
-│   ├── CaseCard.tsx              # Case preview: reactions, favorites, narrative toggle
+│   ├── CaseCard.tsx              # Case preview: score badge, reactions, favorites, narrative toggle
+│   ├── ExplainabilityTags.tsx    # Badges showing which preferences/bio boosted ranking
 │   ├── FilterPanel.tsx           # Collapsible sidebar: NOS, date, source, favorites
+│   ├── InteractionTabs.tsx       # Tab filter: new / liked / disliked / reviewed / all
 │   ├── NarrativeFeedback.tsx     # Textarea for feedback with signal extraction UI
-│   └── ExplainabilityTags.tsx    # Badges showing which preferences boosted ranking
+│   ├── NewUserSetupModal.tsx     # Onboarding modal for bio/API key/model setup
+│   ├── ScoreCasesModal.tsx       # Modal to batch-score cases with filtering options
+│   └── Toast.tsx                 # Toast notification system with auto-dismiss
 ├── lib/
-│   ├── types.ts                  # All TypeScript interfaces + GEMINI_MODELS constant
 │   ├── encryption.ts             # AES-256-GCM encrypt/decrypt for API keys
 │   ├── personalization.ts        # Core reranking logic (see Personalization section)
+│   ├── preference-utils.ts       # Profile rebuild, reaction signals, score staleness
 │   ├── supabase-browser.ts       # Client-side Supabase (singleton)
-│   └── supabase-server.ts        # Server-side Supabase with SSR cookie handling
+│   ├── supabase-server.ts        # Server-side Supabase with SSR cookie handling
+│   └── types.ts                  # All TypeScript interfaces + GEMINI_MODELS constant
 └── middleware.ts                 # Route protection + auth redirect (THIS is the active one)
 ```
 
@@ -83,20 +93,151 @@ No test suite exists yet. No CI/CD pipeline is configured.
 
 ## Database Schema (Supabase / PostgreSQL)
 
-Tables inferred from API route queries:
+### `cases`
+Primary case data, synced from offline notebook. The web app never creates or modifies case records.
 
-| Table | Purpose |
-|-------|---------|
-| `cases` | Litigation case records (id, entity, docket_number, case_name, case_type, court_name, status, nature_of_suit, cause_of_action, demand, judge, plaintiffs, defendants, attorneys, complaint_text, complaint_summary, blaw_url, filed, updated, date_logged) |
-| `case_chunks` | Complaint text chunks with pgvector embeddings (used by `match_case_chunks` RPC) |
-| `consultant_results` | Per-case viability + top-3 consultant rankings with scores and explanations |
-| `user_reactions` | Like (+1) / dislike (-1) per user per case |
-| `user_favorites` | Saved cases per user |
-| `user_settings` | Encrypted API key, model preference, bio_text |
-| `user_narratives` | Free-text feedback per user per case (upsert on conflict user_id,case_id) |
-| `preference_signals` | Extracted signals: dimension, entity, score per narrative |
-| `user_preference_profile` | Aggregated: dimension, entity, cumulative_score, mention_count, avg_score |
-| `user_dimension_weights` | Per-dimension weight as proportion of total mentions |
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | text | NO | PK, Bloomberg docket ID |
+| entity | text | YES | Company/firm/keyword that matched |
+| source | text | YES | Search source type |
+| docket_number | text | YES | |
+| filed | date | YES | |
+| updated | date | YES | |
+| case_name | text | NO | |
+| case_type | text | YES | |
+| court_name | text | YES | |
+| status | text | YES | |
+| nature_of_suit | text | YES | Data quality issues — don't rely on for logic |
+| cause_of_action | text | YES | Data quality issues — don't rely on for logic |
+| demand | text | YES | |
+| judge | text | YES | |
+| plaintiffs | jsonb | YES | Array of names |
+| defendants | jsonb | YES | Array of names |
+| attorneys | jsonb | YES | Array of names |
+| complaint_text | text | YES | Raw complaint PDF text |
+| complaint_summary | text | YES | Gemini-generated 2-paragraph summary |
+| blaw_url | text | YES | Bloomberg Law link |
+| date_logged | timestamptz | YES | |
+| case_viability | text | YES | 'high', 'medium', 'low' — set by notebook |
+| viability_reasoning | text | YES | One sentence explanation |
+| viability_scored_at | timestamptz | YES | |
+
+### `case_chunks`
+Embedding chunks for RAG search. Generated by `/api/admin/generate-embeddings`.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | bigint | NO | PK |
+| case_id | text | YES | FK → cases.id |
+| chunk_index | integer | NO | |
+| chunk_text | text | NO | |
+| section_type | text | YES | |
+| embedding | vector(1024) | YES | BAAI/bge-large-en-v1.5 |
+| metadata | jsonb | YES | |
+
+### `user_settings`
+Per-user configuration.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| user_id | uuid | NO | PK, FK → auth.users |
+| api_key_encrypted | text | YES | AES-256 encrypted Gemini key |
+| api_key_masked | text | YES | Display version (last 4 chars) |
+| model_preference | text | YES | Gemini model to use |
+| bio_text | text | YES | Professional bio for scoring |
+| bio_updated_at | timestamptz | YES | |
+| created_at | timestamptz | YES | |
+| updated_at | timestamptz | YES | |
+
+### `user_case_scores`
+Per-user relevance scores. One row per user-case pair.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | uuid | NO | PK |
+| user_id | uuid | NO | FK → auth.users |
+| case_id | text | NO | FK → cases.id |
+| score | integer | NO | 1-10, CHECK constraint |
+| reasoning | text | YES | One sentence from Gemini |
+| source | text | NO | Always 'direct' |
+| stale | boolean | YES | True after preference changes |
+| scored_at | timestamptz | YES | |
+| | | | UNIQUE(user_id, case_id) |
+
+### `user_reactions`
+Like/dislike on cases. 1 = like, -1 = dislike.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | bigint | NO | PK |
+| user_id | uuid | YES | FK → auth.users |
+| case_id | text | YES | FK → cases.id |
+| reaction | smallint | NO | 1 or -1 |
+| created_at | timestamptz | YES | |
+
+### `user_narratives`
+Free-text feedback on cases. Upsert on conflict (user_id, case_id).
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | bigint | NO | PK |
+| user_id | uuid | NO | FK → auth.users |
+| case_id | text | NO | FK → cases.id |
+| narrative | text | NO | User's written feedback |
+| created_at | timestamptz | YES | |
+| updated_at | timestamptz | YES | |
+
+### `preference_signals`
+Individual preference data points extracted from reactions and narratives.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | bigint | NO | PK |
+| user_id | uuid | NO | FK → auth.users |
+| narrative_id | bigint | NO | FK → user_narratives.id |
+| case_id | text | NO | FK → cases.id |
+| dimension | text | NO | e.g. 'practice_area', 'firm', 'jurisdiction', 'judge', 'topic' |
+| entity | text | NO | The extracted value |
+| score | numeric | NO | Weighted signal strength |
+| source | text | NO | 'narrative' or 'reaction' |
+| created_at | timestamptz | YES | |
+
+### `user_preference_profile`
+Aggregated preference profile, rebuilt from all signals after each interaction.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | bigint | NO | PK |
+| user_id | uuid | NO | FK → auth.users |
+| dimension | text | NO | |
+| entity | text | NO | |
+| cumulative_score | numeric | YES | Sum of signal scores |
+| mention_count | integer | YES | Number of signals |
+| avg_score | numeric | YES | cumulative_score / mention_count |
+| updated_at | timestamptz | YES | |
+
+### `user_dimension_weights`
+How important each dimension is for a user, based on proportion of total mentions.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | bigint | NO | PK |
+| user_id | uuid | NO | FK → auth.users |
+| dimension | text | NO | |
+| total_mentions | integer | YES | |
+| weight | numeric | YES | total_mentions / grand total |
+| updated_at | timestamptz | YES | |
+
+### `user_favorites`
+Bookmarked cases.
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| id | bigint | NO | PK |
+| user_id | uuid | YES | FK → auth.users |
+| case_id | text | YES | FK → cases.id |
+| created_at | timestamptz | YES | |
 
 **RPC**: `match_case_chunks(query_embedding, match_threshold, match_count)` — pgvector similarity search.
 
@@ -162,7 +303,16 @@ Bio text is tokenized, stop words removed, then matched against case text (compl
 
 ### Profile Rebuild Strategy
 
-When a narrative is updated, `rebuildPreferenceProfile()` in `src/app/api/narrative/route.ts` fully clears and reconstructs `user_preference_profile` and `user_dimension_weights` from all `preference_signals`. This is intentional — it handles edits correctly at the cost of slightly more DB writes.
+When a narrative is updated, `rebuildPreferenceProfile()` in `src/lib/preference-utils.ts` fully clears and reconstructs `user_preference_profile` and `user_dimension_weights` from all `preference_signals`. It computes `avg_score = cumulative_score / mention_count` for each entity. This is intentional — it handles edits correctly at the cost of slightly more DB writes.
+
+## Preference Utilities (`src/lib/preference-utils.ts`)
+
+Shared functions used by the narrative and react API routes:
+
+- **`rebuildPreferenceProfile(supabase, userId)`** — Clears and reconstructs `user_preference_profile` and `user_dimension_weights` from all `preference_signals`. Computes cumulative_score, mention_count, and avg_score per dimension/entity pair.
+- **`createReactionSignals(supabase, userId, caseId, reaction)`** — Generates preference signals from a like/dislike by mapping case metadata (firm, practice_area, jurisdiction, judge) to signals with attenuated scores.
+- **`deleteReactionSignals(supabase, userId, caseId)`** — Removes reaction-sourced signals for a user+case.
+- **`markScoresStale(supabase, userId)`** — Marks all `user_case_scores` as stale after preference changes, triggering re-scoring on next view.
 
 ## API Routes
 
@@ -176,7 +326,19 @@ When a narrative is updated, `rebuildPreferenceProfile()` in `src/app/api/narrat
 7. Optionally calls Gemini for a 2-3 paragraph synthesis (requires user API key)
 
 ### `POST /api/react`
-Records a like (+1) or dislike (-1) reaction. Also extracts feature signals from the case metadata and updates preference weights (legacy path — the newer narrative flow is more powerful).
+Records a like (+1) or dislike (-1) reaction. Creates/deletes preference signals from case metadata via `createReactionSignals()` / `deleteReactionSignals()`, then rebuilds the full preference profile and marks scores stale.
+
+### `POST /api/score-cases`
+Scores cases for relevance to the user's professional expertise using Gemini. Accepts `{ case_ids: string[] }` (max 10). Uses bio text, preference profile, and recent narratives to build a scoring prompt. Scores each case 1-10 and upserts results into `user_case_scores`. Auto-triggered by the dashboard and search page for unscored cases.
+
+### `GET /api/preferences`
+Returns the user's full preference profile (dimension/entity/scores), dimension weights, and narrative count.
+
+### `DELETE /api/preferences`
+Removes a specific entity from the preference profile and its underlying signals. Recalculates dimension weights.
+
+### `PATCH /api/preferences`
+Manually adjusts the avg_score for a specific dimension/entity in the profile.
 
 ### `GET /api/settings` / `PUT /api/settings`
 Manages `user_settings` table. API keys are always stored encrypted (AES-256-GCM) and never returned in plaintext — only a masked version (`ABCD...WXYZ`) is returned.
@@ -190,6 +352,17 @@ Returns the user's existing narrative text and extracted signals for a case.
 3. Calls Gemini with structured prompt to extract `ExtractedSignal[]` (dimension, entity, score -1 to 1)
 4. Saves signals to `preference_signals`
 5. Calls `rebuildPreferenceProfile()` to reconstruct the full profile
+6. Calls `markScoresStale()` to invalidate existing scores
+
+## Dashboard Behavior
+
+The dashboard (`src/app/dashboard/page.tsx`) has several important behaviors:
+
+- **Pagination**: Loads 50 cases at a time (by filed date desc) with infinite scroll.
+- **Interacted cases**: After loading the initial page, the dashboard fetches any liked/disliked/reviewed cases that fall outside the initial page. This ensures all interacted cases always appear in their respective tabs.
+- **Interaction tabs**: Cases are categorized into new / liked / disliked / reviewed / all. The "new" tab filters out any case the user has interacted with.
+- **Auto-scoring**: Unscored cases can be batch-scored via the ScoreCasesModal, which supports filtering by viability, date range, and keyword.
+- **Score sorting**: Scored cases sort first (by score desc), then unscored by filed date desc.
 
 ## TypeScript Conventions
 
@@ -222,8 +395,8 @@ Cases are populated via an offline Jupyter notebook (`Themis.ipynb`, not in this
 
 1. Case tracker → `docket_db.csv`
 2. Complaint extraction + Gemini summarization → `cases.csv`
-3. Consultant matching + LLM ranking → `results.csv`
-4. Supabase upsert (cases, case_chunks with embeddings, consultant_results)
+3. Viability assessment → `case_viability` and `viability_reasoning` fields on `cases` table
+4. Supabase upsert (cases, case_chunks with embeddings)
 
 The web app is read-only with respect to the case data — it never creates or modifies case records.
 
@@ -231,9 +404,7 @@ The web app is read-only with respect to the case data — it never creates or m
 
 - **No test suite**: No Jest, Vitest, or testing setup exists. When adding tests, Vitest with React Testing Library is the recommended choice for this stack.
 - **No CI/CD**: Deployments are manual (Vercel git integration). Consider adding GitHub Actions for lint + type-check on PRs.
-- **Legacy exports in `personalization.ts`**: `extractCaseFeatures()` and `rerankCases()` at the bottom of the file are stubs kept for backward compatibility. They do nothing and can be removed when confirmed safe.
 - **`src/app/middleware.ts`**: Appears to be a stale duplicate of `src/middleware.ts`. Should be removed to avoid confusion.
-- **Sequential DB writes in `updatePreferenceProfile()`**: The function in `narrative/route.ts` iterates signals with `await` in a loop. For large signal sets this is slow — could be parallelized with `Promise.all`.
 - **No rate limiting**: API routes have no rate limiting on Gemini calls — a user could trigger many expensive requests.
 - **`any` types in Supabase responses**: Several API routes cast Supabase results to `any`. Consider generating types with `supabase gen types typescript`.
 

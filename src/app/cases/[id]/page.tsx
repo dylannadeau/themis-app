@@ -58,7 +58,7 @@ function ScoreBadgeLarge({ scoreData, loading }: { scoreData: ScoreData | null; 
     colorClasses = 'bg-gray-100 text-gray-500 border border-gray-200/60';
   }
 
-  const display = source === 'cluster' ? `~${score}` : `${score}`;
+  const display = `${score}`;
 
   return (
     <div className="flex items-center gap-3 animate-fade-in">
@@ -130,7 +130,7 @@ export default function CaseDetailPage() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ mode: 'direct', case_ids: [caseId] }),
+        body: JSON.stringify({ case_ids: [caseId] }),
       });
 
       if (response.ok) {
@@ -168,7 +168,7 @@ export default function CaseDetailPage() {
         return;
       }
 
-      const [reactionResult, scoreResult, viabilityResult] = await Promise.all([
+      const [reactionResult, scoreResult] = await Promise.all([
         supabase
           .from('user_reactions')
           .select('*')
@@ -179,11 +179,6 @@ export default function CaseDetailPage() {
           .from('user_case_scores')
           .select('score, reasoning, source, stale')
           .eq('user_id', session.user.id)
-          .eq('case_id', caseId)
-          .single(),
-        supabase
-          .from('consultant_results')
-          .select('case_viability, viability_reasoning')
           .eq('case_id', caseId)
           .single(),
       ]);
@@ -198,8 +193,8 @@ export default function CaseDetailPage() {
       setScoreData(fetchedScore);
 
       setViabilityData({
-        case_viability: viabilityResult.data?.case_viability ?? null,
-        viability_reasoning: viabilityResult.data?.viability_reasoning ?? null,
+        case_viability: data.case_viability ?? null,
+        viability_reasoning: data.viability_reasoning ?? null,
       });
 
       setLoading(false);
