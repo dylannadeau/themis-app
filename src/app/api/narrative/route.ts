@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase-server';
-import { decrypt } from '@/lib/encryption';
 import { rebuildPreferenceProfile, markScoresStale } from '@/lib/preference-utils';
+import { generateText, resolveProviderConfig } from '@/lib/ai-provider';
 
 const DIMENSIONS = ['firm', 'attorney', 'client', 'practice_area', 'case_type', 'jurisdiction', 'judge', 'topic'] as const;
 
@@ -12,13 +12,12 @@ interface ExtractedSignal {
 }
 
 /**
- * Extract structured preference signals from a narrative using Gemini
+ * Extract structured preference signals from a narrative using the user's AI provider
  */
 async function extractPreferences(
   narrative: string,
   caseMetadata: Record<string, any>,
-  apiKey: string,
-  modelId: string
+  providerConfig: ReturnType<typeof resolveProviderConfig> & object,
 ): Promise<ExtractedSignal[]> {
   const prompt = `You are analyzing user feedback about a legal case to extract sentiment signals.
 
@@ -51,27 +50,13 @@ Example response:
 
 If the user didn't express sentiment about any dimension, respond with an empty array: []`;
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          maxOutputTokens: 1024,
-          temperature: 0.1,
-        },
-      }),
-    }
-  );
+  const text = await generateText(providerConfig, {
+    prompt,
+    maxOutputTokens: 1024,
+    temperature: 0.1,
+  });
 
-  if (!response.ok) {
-    throw new Error(`Gemini API error: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+  if (!text) return [];
 
   // Clean up response - strip markdown fences if present
   const cleaned = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
@@ -93,7 +78,7 @@ If the user didn't express sentiment about any dimension, respond with an empty 
         score: Math.max(-1, Math.min(1, s.score)),
       }));
   } catch {
-    console.error('Failed to parse Gemini extraction:', cleaned);
+    console.error('Failed to parse AI extraction:', cleaned);
     return [];
   }
 }
@@ -113,17 +98,18 @@ export async function POST(request: NextRequest) {
 
     const userId = session.user.id;
 
-    // Get user's Gemini API key
+    // Get user settings and resolve AI provider
     const { data: settings } = await supabase
       .from('user_settings')
-      .select('api_key_encrypted, model_preference')
+      .select('api_key_encrypted, anthropic_key_encrypted, ai_provider, model_preference')
       .eq('user_id', userId)
       .single();
 
-    if (!settings?.api_key_encrypted) {
+    const providerConfig = settings ? resolveProviderConfig(settings) : null;
+    if (!providerConfig) {
       return NextResponse.json(
-        { error: 'Gemini API key required. Add one in Settings.' },
-        { status: 400 }
+        { error: 'API key required. Add one in Settings.' },
+        { status: 400 },
       );
     }
 
@@ -163,15 +149,12 @@ export async function POST(request: NextRequest) {
       .eq('case_id', case_id)
       .eq('source', 'narrative');
 
-    // Extract preferences via Gemini
-    const apiKey = decrypt(settings.api_key_encrypted);
-    const modelId = settings.model_preference || 'gemini-2.0-flash';
-
+    // Extract preferences via AI provider
     let signals: ExtractedSignal[] = [];
     try {
-      signals = await extractPreferences(narrative.trim(), caseData, apiKey, modelId);
+      signals = await extractPreferences(narrative.trim(), caseData, providerConfig);
     } catch (err) {
-      console.error('Gemini extraction failed:', err);
+      console.error('AI extraction failed:', err);
       // Non-fatal: save narrative but skip extraction
       return NextResponse.json({
         success: true,

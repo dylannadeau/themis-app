@@ -4,21 +4,25 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase-browser';
 import AppShell from '@/components/AppShell';
-import { GEMINI_MODELS } from '@/lib/types';
+import { AI_PROVIDERS, type AIProvider } from '@/lib/types';
 import {
   Settings as SettingsIcon, Key, Cpu, Save, Loader2, CheckCircle,
   AlertCircle, Eye, EyeOff, Trash2, User, FileText, Upload, Pencil
 } from 'lucide-react';
 
 export default function SettingsPage() {
+  const [provider, setProvider] = useState<AIProvider>('gemini');
   const [apiKey, setApiKey] = useState('');
   const [maskedKey, setMaskedKey] = useState<string | null>(null);
+  const [anthropicKey, setAnthropicKey] = useState('');
+  const [anthropicMaskedKey, setAnthropicMaskedKey] = useState<string | null>(null);
   const [model, setModel] = useState('gemini-2.0-flash');
   const [bioText, setBioText] = useState('');
   const [savedBio, setSavedBio] = useState<string | null>(null);
   const [bioEditing, setBioEditing] = useState(false);
   const [bioSaving, setBioSaving] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [showAnthropicKey, setShowAnthropicKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
@@ -29,6 +33,9 @@ export default function SettingsPage() {
   const bioTextareaRef = useRef<HTMLTextAreaElement>(null);
   const router = useRouter();
   const supabase = createClient();
+
+  const activeProvider = AI_PROVIDERS.find((p) => p.id === provider) || AI_PROVIDERS[0];
+  const activeKeyMask = provider === 'gemini' ? maskedKey : anthropicMaskedKey;
 
   useEffect(() => {
     async function loadSettings() {
@@ -44,16 +51,20 @@ export default function SettingsPage() {
         .single();
 
       if (data) {
+        const savedProvider: AIProvider = data.ai_provider || 'gemini';
+        setProvider(savedProvider);
         setModel(data.model_preference || 'gemini-2.0-flash');
         if (data.api_key_encrypted) {
           setMaskedKey(data.api_key_masked || '****...****');
+        }
+        if (data.anthropic_key_encrypted) {
+          setAnthropicMaskedKey(data.anthropic_key_masked || '****...****');
         }
         if (data.bio_text) {
           setBioText(data.bio_text);
           setSavedBio(data.bio_text);
           setBioEditing(false);
         } else {
-          // No bio yet — start in editing mode
           setBioEditing(true);
         }
       } else {
@@ -62,6 +73,18 @@ export default function SettingsPage() {
     }
     loadSettings();
   }, [supabase, router]);
+
+  // When switching providers, pick the first model of the new provider if current model doesn't belong
+  const handleProviderChange = (newProvider: AIProvider) => {
+    setProvider(newProvider);
+    const newProviderDef = AI_PROVIDERS.find((p) => p.id === newProvider);
+    if (newProviderDef) {
+      const currentModelBelongs = newProviderDef.models.some((m) => m.id === model);
+      if (!currentModelBelongs) {
+        setModel(newProviderDef.models[0].id);
+      }
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -140,7 +163,6 @@ export default function SettingsPage() {
 
   const handleBioEdit = () => {
     setBioEditing(true);
-    // Focus the textarea after state update
     setTimeout(() => bioTextareaRef.current?.focus(), 50);
   };
 
@@ -160,16 +182,22 @@ export default function SettingsPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
+      const body: Record<string, any> = {
+        ai_provider: provider,
+        model_preference: model,
+      };
+
+      // Send the key for whichever provider the user entered
+      if (apiKey) body.api_key = apiKey;
+      if (anthropicKey) body.anthropic_key = anthropicKey;
+
       const response = await fetch('/api/settings', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({
-          api_key: apiKey || undefined,
-          model_preference: model,
-        }),
+        body: JSON.stringify(body),
       });
 
       const data = await response.json();
@@ -180,6 +208,10 @@ export default function SettingsPage() {
         setMaskedKey(data.masked_key || '****...****');
         setApiKey('');
       }
+      if (anthropicKey) {
+        setAnthropicMaskedKey(data.anthropic_masked_key || '****...****');
+        setAnthropicKey('');
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -187,8 +219,9 @@ export default function SettingsPage() {
     }
   };
 
-  const handleDeleteKey = async () => {
-    if (!confirm('Are you sure you want to remove your API key? AI search and feedback analysis will be disabled.')) return;
+  const handleDeleteKey = async (keyProvider: AIProvider) => {
+    const providerName = keyProvider === 'gemini' ? 'Gemini' : 'Anthropic';
+    if (!confirm(`Are you sure you want to remove your ${providerName} API key? AI features using this provider will be disabled.`)) return;
 
     setDeleting(true);
     setError(null);
@@ -198,13 +231,20 @@ export default function SettingsPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
+      const body: Record<string, any> = { model_preference: model };
+      if (keyProvider === 'gemini') {
+        body.api_key = null;
+      } else {
+        body.anthropic_key = null;
+      }
+
       const response = await fetch('/api/settings', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ api_key: null, model_preference: model }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -212,9 +252,14 @@ export default function SettingsPage() {
         throw new Error(data.error || 'Failed to delete key');
       }
 
-      setMaskedKey(null);
-      setApiKey('');
-      setSuccess('API key removed.');
+      if (keyProvider === 'gemini') {
+        setMaskedKey(null);
+        setApiKey('');
+      } else {
+        setAnthropicMaskedKey(null);
+        setAnthropicKey('');
+      }
+      setSuccess(`${providerName} API key removed.`);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -339,14 +384,54 @@ export default function SettingsPage() {
           )}
         </div>
 
-        {/* API Key Configuration */}
+        {/* AI Provider Selection */}
+        <div className="card p-6 mb-6">
+          <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
+            <Cpu className="w-4 h-4" />
+            AI Provider
+          </h2>
+          <p className="text-xs text-gray-500 mb-4">
+            Choose which AI provider to use for search synthesis, feedback analysis, and case scoring.
+          </p>
+
+          <div className="space-y-2">
+            {AI_PROVIDERS.map((p) => (
+              <label
+                key={p.id}
+                className={`flex items-center gap-3 p-3.5 rounded-lg border cursor-pointer transition-all ${
+                  provider === p.id
+                    ? 'border-themis-300 bg-themis-50/50 shadow-sm'
+                    : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50/50'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="ai-provider"
+                  value={p.id}
+                  checked={provider === p.id}
+                  onChange={() => handleProviderChange(p.id)}
+                  className="w-4 h-4 text-themis-600 focus:ring-themis-500/30"
+                />
+                <div>
+                  <span className="text-sm font-medium text-themis-900">{p.name}</span>
+                  <span className="text-xs text-gray-500 ml-2">{p.description}</span>
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* API Key Configuration — Gemini */}
         <div className="card p-6 mb-6">
           <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
             <Key className="w-4 h-4" />
             Gemini API Key
+            {provider === 'gemini' && (
+              <span className="text-xs font-normal text-themis-500 bg-themis-50 px-2 py-0.5 rounded-full">Active</span>
+            )}
           </h2>
           <p className="text-xs text-gray-500 mb-5">
-            Your key is encrypted at rest and used for search synthesis and feedback analysis. Get one free at{' '}
+            Your key is encrypted at rest. Get one free at{' '}
             <a
               href="https://aistudio.google.com/apikey"
               target="_blank"
@@ -366,10 +451,10 @@ export default function SettingsPage() {
                 </span>
               </div>
               <button
-                onClick={handleDeleteKey}
+                onClick={() => handleDeleteKey('gemini')}
                 disabled={deleting}
                 className="text-red-400 hover:text-red-600 transition p-1"
-                title="Remove API key"
+                title="Remove Gemini API key"
               >
                 {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
               </button>
@@ -395,6 +480,65 @@ export default function SettingsPage() {
           </div>
         </div>
 
+        {/* API Key Configuration — Anthropic */}
+        <div className="card p-6 mb-6">
+          <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
+            <Key className="w-4 h-4" />
+            Anthropic API Key
+            {provider === 'anthropic' && (
+              <span className="text-xs font-normal text-themis-500 bg-themis-50 px-2 py-0.5 rounded-full">Active</span>
+            )}
+          </h2>
+          <p className="text-xs text-gray-500 mb-5">
+            Your key is encrypted at rest. Get one at{' '}
+            <a
+              href="https://console.anthropic.com/settings/keys"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-themis-500 hover:text-themis-700 underline"
+            >
+              console.anthropic.com
+            </a>
+          </p>
+
+          {anthropicMaskedKey && (
+            <div className="flex items-center justify-between px-4 py-3 bg-emerald-50/50 border border-emerald-100 rounded-lg mb-4">
+              <div className="flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 text-emerald-500" />
+                <span className="text-sm text-emerald-700">
+                  Key configured: <span className="font-mono">{anthropicMaskedKey}</span>
+                </span>
+              </div>
+              <button
+                onClick={() => handleDeleteKey('anthropic')}
+                disabled={deleting}
+                className="text-red-400 hover:text-red-600 transition p-1"
+                title="Remove Anthropic API key"
+              >
+                {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              </button>
+            </div>
+          )}
+
+          <div className="relative">
+            <Key className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type={showAnthropicKey ? 'text' : 'password'}
+              value={anthropicKey}
+              onChange={(e) => setAnthropicKey(e.target.value)}
+              className="input-field pl-10 pr-10"
+              placeholder={anthropicMaskedKey ? 'Enter new key to replace' : 'sk-ant-...'}
+            />
+            <button
+              type="button"
+              onClick={() => setShowAnthropicKey(!showAnthropicKey)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition"
+            >
+              {showAnthropicKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
+        </div>
+
         {/* Model Selection */}
         <div className="card p-6 mb-6">
           <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
@@ -402,11 +546,11 @@ export default function SettingsPage() {
             Model Preference
           </h2>
           <p className="text-xs text-gray-500 mb-4">
-            Choose which Gemini model to use for search synthesis and feedback analysis. Cost varies by model.
+            Choose which {activeProvider.name} model to use for search synthesis and feedback analysis.
           </p>
 
           <div className="space-y-2">
-            {GEMINI_MODELS.map((m) => (
+            {activeProvider.models.map((m) => (
               <label
                 key={m.id}
                 className={`flex items-center gap-3 p-3.5 rounded-lg border cursor-pointer transition-all ${
@@ -446,14 +590,14 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* Save Button (for API key + model) */}
+        {/* Save Button (for provider + API keys + model) */}
         <button
           onClick={handleSave}
           disabled={saving}
           className="btn-primary gap-2 w-full sm:w-auto"
         >
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          Save API Key & Model
+          Save Provider & Keys
         </button>
       </div>
     </AppShell>

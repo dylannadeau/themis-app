@@ -203,7 +203,7 @@ export default function SearchPage() {
               <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm font-medium text-amber-800">
-                  AI-powered search requires a Gemini API key
+                  AI-powered search requires an API key
                 </p>
                 <p className="text-xs text-amber-600 mt-0.5">
                   Without it, search uses keyword matching only.{' '}

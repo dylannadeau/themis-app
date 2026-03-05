@@ -266,7 +266,7 @@ export default function ScoreCasesModal({
           <p className="text-sm text-gray-600">
             Will score ~<strong>{estimate.count}</strong> cases
             {' · '}Estimated ~<strong>{estimate.minutes < 1 ? '<1' : Math.ceil(estimate.minutes)}</strong> minute{estimate.minutes >= 2 ? 's' : ''}
-            {' · '}Uses your Gemini API key
+            {' · '}Uses your AI API key
           </p>
           {estimate.count > 500 && (
             <p className="text-xs text-amber-600 mt-1.5 flex items-center gap-1">

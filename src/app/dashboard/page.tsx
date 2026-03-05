@@ -679,7 +679,7 @@ export default function DashboardPage() {
               <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm font-medium text-amber-800">
-                  Add your Gemini API key to enable AI-powered search and feedback analysis
+                  Add your API key to enable AI-powered search and feedback analysis
                 </p>
                 <p className="text-xs text-amber-600 mt-0.5">
                   Go to{' '}

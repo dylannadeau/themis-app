@@ -2,7 +2,7 @@
 
 import { useState, useRef } from 'react';
 import { createClient } from '@/lib/supabase-browser';
-import { GEMINI_MODELS } from '@/lib/types';
+import { AI_PROVIDERS, type AIProvider } from '@/lib/types';
 import {
   X, Key, FileText, Upload, Loader2, Save, Eye, EyeOff,
   AlertTriangle, CheckCircle, Cpu, Sparkles, AlertCircle
@@ -14,6 +14,7 @@ interface NewUserSetupModalProps {
 
 export default function NewUserSetupModal({ onComplete }: NewUserSetupModalProps) {
   const [bioText, setBioText] = useState('');
+  const [provider, setProvider] = useState<AIProvider>('gemini');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('gemini-2.0-flash');
   const [showKey, setShowKey] = useState(false);
@@ -23,6 +24,17 @@ export default function NewUserSetupModal({ onComplete }: NewUserSetupModalProps
   const [showDismissWarning, setShowDismissWarning] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const supabase = createClient();
+
+  const activeProvider = AI_PROVIDERS.find((p) => p.id === provider) || AI_PROVIDERS[0];
+
+  const handleProviderChange = (newProvider: AIProvider) => {
+    setProvider(newProvider);
+    setApiKey('');
+    const newProviderDef = AI_PROVIDERS.find((p) => p.id === newProvider);
+    if (newProviderDef) {
+      setModel(newProviderDef.models[0].id);
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -75,6 +87,7 @@ export default function NewUserSetupModal({ onComplete }: NewUserSetupModalProps
       }
 
       const body: Record<string, string | undefined> = {
+        ai_provider: provider,
         model_preference: model,
       };
 
@@ -82,7 +95,12 @@ export default function NewUserSetupModal({ onComplete }: NewUserSetupModalProps
         body.bio_text = bioText.trim();
       }
       if (apiKey.trim()) {
-        body.api_key = apiKey.trim();
+        // Route key to the correct field based on provider
+        if (provider === 'gemini') {
+          body.api_key = apiKey.trim();
+        } else {
+          body.anthropic_key = apiKey.trim();
+        }
       }
 
       const response = await fetch('/api/settings', {
@@ -223,21 +241,57 @@ export default function NewUserSetupModal({ onComplete }: NewUserSetupModalProps
             />
           </div>
 
+          {/* AI Provider Section */}
+          <div className="mb-5">
+            <label className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
+              <Cpu className="w-4 h-4" />
+              AI Provider
+            </label>
+            <p className="text-xs text-gray-500 mb-2">
+              Choose your AI provider. You can change this later in Settings.
+            </p>
+            <div className="space-y-1.5">
+              {AI_PROVIDERS.map((p) => (
+                <label
+                  key={p.id}
+                  className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                    provider === p.id
+                      ? 'border-themis-300 bg-themis-50/50 shadow-sm'
+                      : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50/50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="setup-provider"
+                    value={p.id}
+                    checked={provider === p.id}
+                    onChange={() => handleProviderChange(p.id)}
+                    className="w-4 h-4 text-themis-600 focus:ring-themis-500/30"
+                  />
+                  <div>
+                    <span className="text-sm font-medium text-themis-900">{p.name}</span>
+                    <span className="text-xs text-gray-500 ml-2">{p.description}</span>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
           {/* API Key Section */}
           <div className="mb-5">
             <label className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
               <Key className="w-4 h-4" />
-              Gemini API Key
+              {activeProvider.name} API Key
             </label>
             <p className="text-xs text-gray-500 mb-2">
-              Your key is encrypted at rest and powers AI search and analysis. Get one free at{' '}
+              Your key is encrypted at rest and powers AI search and analysis. Get one at{' '}
               <a
-                href="https://aistudio.google.com/apikey"
+                href={activeProvider.keyHelpUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-themis-500 hover:text-themis-700 underline"
               >
-                aistudio.google.com
+                {activeProvider.keyHelpLabel}
               </a>
             </p>
             <div className="relative">
@@ -247,7 +301,7 @@ export default function NewUserSetupModal({ onComplete }: NewUserSetupModalProps
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 className="input-field pl-10 pr-10"
-                placeholder="AIza..."
+                placeholder={activeProvider.keyPlaceholder}
               />
               <button
                 type="button"
@@ -266,10 +320,10 @@ export default function NewUserSetupModal({ onComplete }: NewUserSetupModalProps
               Model Preference
             </label>
             <p className="text-xs text-gray-500 mb-2">
-              Choose which Gemini model to use. You can change this later in Settings.
+              Choose which {activeProvider.name} model to use. You can change this later in Settings.
             </p>
             <div className="space-y-1.5">
-              {GEMINI_MODELS.map((m) => (
+              {activeProvider.models.map((m) => (
                 <label
                   key={m.id}
                   className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
