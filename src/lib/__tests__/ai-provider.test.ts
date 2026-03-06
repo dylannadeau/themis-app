@@ -108,7 +108,7 @@ describe('generateText — Anthropic', () => {
   const anthropicConfig: AIProviderConfig = {
     provider: 'anthropic',
     apiKey: 'sk-ant-test-key',
-    modelId: 'claude-sonnet-4-20250514',
+    modelId: 'claude-sonnet-4-6',
   };
 
   it('sends correct request structure to Anthropic API', async () => {
@@ -133,7 +133,7 @@ describe('generateText — Anthropic', () => {
     expect(options.headers['anthropic-version']).toBe('2023-06-01');
 
     const body = JSON.parse(options.body);
-    expect(body.model).toBe('claude-sonnet-4-20250514');
+    expect(body.model).toBe('claude-sonnet-4-6');
     expect(body.max_tokens).toBe(256);
     expect(body.temperature).toBe(0.5);
     expect(body.messages[0].role).toBe('user');
@@ -218,13 +218,13 @@ describe('resolveProviderConfig', () => {
       ai_provider: 'anthropic',
       api_key_encrypted: null,
       anthropic_key_encrypted: 'enc-claude-key',
-      model_preference: 'claude-sonnet-4-20250514',
+      model_preference: 'claude-sonnet-4-6',
     });
 
     expect(config).not.toBeNull();
     expect(config!.provider).toBe('anthropic');
     expect(config!.apiKey).toBe('decrypted-enc-claude-key');
-    expect(config!.modelId).toBe('claude-sonnet-4-20250514');
+    expect(config!.modelId).toBe('claude-sonnet-4-6');
   });
 
   it('defaults to gemini when ai_provider is null', () => {
@@ -282,7 +282,7 @@ describe('resolveProviderConfig', () => {
     });
 
     expect(config).not.toBeNull();
-    expect(config!.modelId).toBe('claude-sonnet-4-20250514');
+    expect(config!.modelId).toBe('claude-sonnet-4-6');
   });
 });
 

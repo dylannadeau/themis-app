@@ -103,9 +103,8 @@ export const AI_PROVIDERS: AIProviderOption[] = [
     keyHelpUrl: 'https://console.anthropic.com/settings/keys',
     keyHelpLabel: 'console.anthropic.com',
     models: [
-      { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', description: 'Best balance of speed and quality' },
-      { id: 'claude-haiku-4-20250506', name: 'Claude Haiku 4', description: 'Fastest and most affordable' },
-      { id: 'claude-opus-4-20250514', name: 'Claude Opus 4', description: 'Most capable, higher cost' },
+      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', description: 'Recommended for most users' },
+      { id: 'claude-haiku-4-5-20250414', name: 'Claude Haiku 4.5', description: 'Faster and cheaper' },
     ],
   },
 ] as const;
