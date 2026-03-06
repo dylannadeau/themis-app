@@ -62,4 +62,51 @@ export const GEMINI_MODELS = [
   { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Most capable, higher cost' },
 ] as const;
 
+export type AIProvider = 'gemini' | 'anthropic';
+
+export interface AIModelOption {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface AIProviderOption {
+  id: AIProvider;
+  name: string;
+  description: string;
+  keyPlaceholder: string;
+  keyHelpUrl: string;
+  keyHelpLabel: string;
+  models: AIModelOption[];
+}
+
+export const AI_PROVIDERS: AIProviderOption[] = [
+  {
+    id: 'gemini',
+    name: 'Google Gemini',
+    description: 'Google\'s AI models — free tier available',
+    keyPlaceholder: 'AIza...',
+    keyHelpUrl: 'https://aistudio.google.com/apikey',
+    keyHelpLabel: 'aistudio.google.com',
+    models: [
+      { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Fast and affordable' },
+      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Latest fast model' },
+      { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', description: 'Lightest and cheapest' },
+      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Most capable, higher cost' },
+    ],
+  },
+  {
+    id: 'anthropic',
+    name: 'Anthropic Claude',
+    description: 'Claude models — high quality reasoning',
+    keyPlaceholder: 'sk-ant-...',
+    keyHelpUrl: 'https://console.anthropic.com/settings/keys',
+    keyHelpLabel: 'console.anthropic.com',
+    models: [
+      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', description: 'Recommended for most users' },
+      { id: 'claude-haiku-4-5-20250414', name: 'Claude Haiku 4.5', description: 'Faster and cheaper' },
+    ],
+  },
+] as const;
+
 export const VALID_SUMMARY_FILTER = `complaint_summary.not.is.null,complaint_summary.neq.,complaint_summary.neq.No complaint found,complaint_summary.neq.ERROR,complaint_summary.neq.Failed to fetch pleadings.`;

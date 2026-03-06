@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase-server';
-import { decrypt } from '@/lib/encryption';
-
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const DEFAULT_MODEL = 'gemini-2.0-flash';
+import { generateText, resolveProviderConfig, type AIProviderConfig } from '@/lib/ai-provider';
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -114,34 +111,15 @@ Respond ONLY with a JSON array, no markdown fences:
 [{"case_id": "...", "score": N, "reasoning": "one sentence"}]`;
 }
 
-async function callGemini(
+async function callAIAndGetText(
   prompt: string,
-  apiKey: string,
-  model: string
+  config: AIProviderConfig,
 ): Promise<string | null> {
-  const response = await fetch(
-    `${GEMINI_API_BASE}/${model}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          maxOutputTokens: 2048,
-          temperature: 0.1,
-        },
-      }),
-    }
-  );
-
-  if (!response.ok) {
-    const errBody = await response.json().catch(() => ({}));
-    console.error(`Gemini API error (${response.status}):`, errBody);
-    return null;
-  }
-
-  const data = await response.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+  return generateText(config, {
+    prompt,
+    maxOutputTokens: 2048,
+    temperature: 0.1,
+  });
 }
 
 function parseScores(text: string): ScoreResult[] {
@@ -163,7 +141,7 @@ function parseScores(text: string): ScoreResult[] {
         reasoning: item.reasoning || '',
       }));
   } catch {
-    console.error('Failed to parse Gemini scoring response:', cleaned);
+    console.error('Failed to parse AI scoring response:', cleaned);
     return [];
   }
 }
@@ -171,7 +149,7 @@ function parseScores(text: string): ScoreResult[] {
 async function getUserSettings(supabase: ReturnType<typeof createServerSupabaseClient>, userId: string) {
   const { data, error } = await supabase
     .from('user_settings')
-    .select('api_key_encrypted, model_preference, bio_text')
+    .select('api_key_encrypted, anthropic_key_encrypted, ai_provider, model_preference, bio_text')
     .eq('user_id', userId)
     .single();
 
@@ -237,28 +215,18 @@ export async function POST(request: NextRequest) {
     if (!settings?.bio_text) {
       return NextResponse.json(
         { error: 'Add your professional bio in Settings to enable scoring.' },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    if (!settings.api_key_encrypted) {
+    const providerConfig = settings ? resolveProviderConfig(settings) : null;
+    if (!providerConfig) {
       return NextResponse.json(
-        { error: 'Add your Gemini API key in Settings to enable scoring.' },
-        { status: 400 }
+        { error: 'Add your API key in Settings to enable scoring.' },
+        { status: 400 },
       );
     }
 
-    let apiKey: string;
-    try {
-      apiKey = decrypt(settings.api_key_encrypted);
-    } catch {
-      return NextResponse.json(
-        { error: 'Failed to decrypt API key. Please re-enter it in Settings.' },
-        { status: 400 }
-      );
-    }
-
-    const model = settings.model_preference || DEFAULT_MODEL;
     const bioText = settings.bio_text;
     const [profileEntries, narratives] = await Promise.all([
       getUserProfile(supabase, userId),
@@ -268,12 +236,11 @@ export async function POST(request: NextRequest) {
     return handleDirectScoring(
       supabase,
       userId,
-      apiKey,
-      model,
+      providerConfig,
       bioText,
       profileEntries,
       narratives,
-      case_ids
+      case_ids,
     );
   } catch (err: unknown) {
     console.error('POST /api/score-cases error:', err);
@@ -281,12 +248,11 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function callGeminiAndParse(
+async function callAIAndParse(
   prompt: string,
-  apiKey: string,
-  model: string
+  config: AIProviderConfig,
 ): Promise<ScoreResult[]> {
-  const text = await callGemini(prompt, apiKey, model);
+  const text = await callAIAndGetText(prompt, config);
   if (!text) return [];
   return parseScores(text);
 }
@@ -294,24 +260,23 @@ async function callGeminiAndParse(
 async function handleDirectScoring(
   supabase: ReturnType<typeof createServerSupabaseClient>,
   userId: string,
-  apiKey: string,
-  model: string,
+  providerConfig: AIProviderConfig,
   bioText: string,
   profileEntries: ProfileEntry[],
   narratives: NarrativeEntry[],
-  caseIds?: string[]
+  caseIds?: string[],
 ) {
   if (!caseIds || !Array.isArray(caseIds) || caseIds.length === 0) {
     return NextResponse.json(
       { error: 'case_ids array is required' },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
   if (caseIds.length > 10) {
     return NextResponse.json(
       { error: 'Maximum 10 cases for direct scoring' },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -324,22 +289,32 @@ async function handleDirectScoring(
   if (casesError || !casesData) {
     return NextResponse.json(
       { error: `Failed to fetch case data: ${casesError?.message}` },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
   const allScores: ScoreResult[] = [];
   const errors: string[] = [];
 
-  // Score one case per Gemini call for precision
+  // Score one case per AI call for precision
   for (const caseItem of casesData as CaseData[]) {
     const prompt = buildScoringPrompt(bioText, profileEntries, narratives, [caseItem]);
-    let scores = await callGeminiAndParse(prompt, apiKey, model);
+    let scores: ScoreResult[] = [];
+
+    try {
+      scores = await callAIAndParse(prompt, providerConfig);
+    } catch {
+      // Will retry below
+    }
 
     // Retry once on failure
     if (scores.length === 0) {
       await sleep(1000);
-      scores = await callGeminiAndParse(prompt, apiKey, model);
+      try {
+        scores = await callAIAndParse(prompt, providerConfig);
+      } catch {
+        // Fall through to error
+      }
       if (scores.length === 0) {
         errors.push(`Failed to score case ${caseItem.id} after retry`);
         continue;
@@ -363,7 +338,7 @@ async function handleDirectScoring(
           stale: false,
           scored_at: new Date().toISOString(),
         },
-        { onConflict: 'user_id,case_id' }
+        { onConflict: 'user_id,case_id' },
       );
 
     if (upsertError) {

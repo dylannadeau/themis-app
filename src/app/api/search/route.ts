@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase-server';
-import { decrypt } from '@/lib/encryption';
 import { rerankWithProfile, PreferenceProfileEntry, DimensionWeight } from '@/lib/personalization';
+import { generateText, resolveProviderConfig } from '@/lib/ai-provider';
 
 const SENTINEL_VALUES = ['No complaint found', 'ERROR', 'Failed to fetch pleadings.', ''];
 
@@ -146,41 +146,21 @@ export async function POST(request: NextRequest) {
       bioText
     );
 
-    // Optional: Gemini synthesis
-    if (settings?.api_key_encrypted && finalResults.length > 0) {
+    // Optional: AI synthesis
+    const providerConfig = settings ? resolveProviderConfig(settings) : null;
+    if (providerConfig && finalResults.length > 0) {
       try {
-        const apiKey = decrypt(settings.api_key_encrypted);
-        const modelId = settings.model_preference || 'gemini-2.0-flash';
-
         const context = finalResults.slice(0, 5).map((c: any, i: number) =>
           `Case ${i + 1}: ${c.case_name}\nCourt: ${c.court_name || 'N/A'}\nNature: ${c.nature_of_suit || 'N/A'}\nSummary: ${(c.complaint_summary || '').slice(0, 500)}`
         ).join('\n\n');
 
-        const geminiResponse = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [{
-                  text: `You are a legal research assistant. Based on the following search query and matching cases, provide a brief synthesis (2-3 paragraphs) that highlights key themes, common elements, and notable differences across these cases. Be concise and professional.\n\nSearch query: "${query}"\n\n${context}`
-                }]
-              }],
-              generationConfig: {
-                maxOutputTokens: 512,
-                temperature: 0.3,
-              },
-            }),
-          }
-        );
-
-        if (geminiResponse.ok) {
-          const geminiData = await geminiResponse.json();
-          synthesis = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || null;
-        }
+        synthesis = await generateText(providerConfig, {
+          prompt: `You are a legal research assistant. Based on the following search query and matching cases, provide a brief synthesis (2-3 paragraphs) that highlights key themes, common elements, and notable differences across these cases. Be concise and professional.\n\nSearch query: "${query}"\n\n${context}`,
+          maxOutputTokens: 512,
+          temperature: 0.3,
+        });
       } catch (err) {
-        console.error('Gemini synthesis failed:', err);
+        console.error('AI synthesis failed:', err);
       }
     }
 
