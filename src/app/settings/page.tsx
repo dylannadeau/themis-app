@@ -16,7 +16,8 @@ export default function SettingsPage() {
   const [maskedKey, setMaskedKey] = useState<string | null>(null);
   const [anthropicKey, setAnthropicKey] = useState('');
   const [anthropicMaskedKey, setAnthropicMaskedKey] = useState<string | null>(null);
-  const [model, setModel] = useState('gemini-2.0-flash');
+  const [geminiModel, setGeminiModel] = useState('gemini-2.0-flash');
+  const [anthropicModel, setAnthropicModel] = useState('claude-sonnet-4-6');
   const [bioText, setBioText] = useState('');
   const [savedBio, setSavedBio] = useState<string | null>(null);
   const [bioEditing, setBioEditing] = useState(false);
@@ -36,6 +37,8 @@ export default function SettingsPage() {
 
   const activeProvider = AI_PROVIDERS.find((p) => p.id === provider) || AI_PROVIDERS[0];
   const activeKeyMask = provider === 'gemini' ? maskedKey : anthropicMaskedKey;
+  const model = provider === 'gemini' ? geminiModel : anthropicModel;
+  const setModel = provider === 'gemini' ? setGeminiModel : setAnthropicModel;
 
   useEffect(() => {
     async function loadSettings() {
@@ -53,7 +56,14 @@ export default function SettingsPage() {
       if (data) {
         const savedProvider: AIProvider = data.ai_provider || 'gemini';
         setProvider(savedProvider);
-        setModel(data.model_preference || 'gemini-2.0-flash');
+        // Restore saved model into the correct per-provider slot
+        if (data.model_preference) {
+          if (savedProvider === 'anthropic') {
+            setAnthropicModel(data.model_preference);
+          } else {
+            setGeminiModel(data.model_preference);
+          }
+        }
         if (data.api_key_encrypted) {
           setMaskedKey(data.api_key_masked || '****...****');
         }
@@ -74,16 +84,8 @@ export default function SettingsPage() {
     loadSettings();
   }, [supabase, router]);
 
-  // When switching providers, pick the first model of the new provider if current model doesn't belong
   const handleProviderChange = (newProvider: AIProvider) => {
     setProvider(newProvider);
-    const newProviderDef = AI_PROVIDERS.find((p) => p.id === newProvider);
-    if (newProviderDef) {
-      const currentModelBelongs = newProviderDef.models.some((m) => m.id === model);
-      if (!currentModelBelongs) {
-        setModel(newProviderDef.models[0].id);
-      }
-    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
