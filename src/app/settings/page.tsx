@@ -384,195 +384,128 @@ export default function SettingsPage() {
           )}
         </div>
 
-        {/* AI Provider Selection */}
+        {/* AI Configuration */}
         <div className="card p-6 mb-6">
           <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
             <Cpu className="w-4 h-4" />
-            AI Provider
+            AI Configuration
           </h2>
           <p className="text-xs text-gray-500 mb-4">
-            Choose which AI provider to use for search synthesis, feedback analysis, and case scoring.
+            Choose your AI provider, API key, and model for search synthesis, feedback analysis, and case scoring.
           </p>
 
-          <div className="space-y-2">
+          {/* Provider toggle */}
+          <div className="flex gap-2 mb-4">
             {AI_PROVIDERS.map((p) => (
-              <label
+              <button
                 key={p.id}
-                className={`flex items-center gap-3 p-3.5 rounded-lg border cursor-pointer transition-all ${
+                onClick={() => handleProviderChange(p.id)}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                   provider === p.id
-                    ? 'border-themis-300 bg-themis-50/50 shadow-sm'
-                    : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50/50'
+                    ? 'bg-themis-600 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
               >
-                <input
-                  type="radio"
-                  name="ai-provider"
-                  value={p.id}
-                  checked={provider === p.id}
-                  onChange={() => handleProviderChange(p.id)}
-                  className="w-4 h-4 text-themis-600 focus:ring-themis-500/30"
-                />
-                <div>
-                  <span className="text-sm font-medium text-themis-900">{p.name}</span>
-                  <span className="text-xs text-gray-500 ml-2">{p.description}</span>
-                </div>
-              </label>
+                {p.name}
+              </button>
             ))}
           </div>
-        </div>
 
-        {/* API Key Configuration — Gemini */}
-        <div className="card p-6 mb-6">
-          <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
-            <Key className="w-4 h-4" />
-            Gemini API Key
-            {provider === 'gemini' && (
-              <span className="text-xs font-normal text-themis-500 bg-themis-50 px-2 py-0.5 rounded-full">Active</span>
-            )}
-          </h2>
-          <p className="text-xs text-gray-500 mb-5">
-            Your key is encrypted at rest. Get one free at{' '}
-            <a
-              href="https://aistudio.google.com/apikey"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-themis-500 hover:text-themis-700 underline"
-            >
-              aistudio.google.com
-            </a>
-          </p>
-
-          {maskedKey && (
-            <div className="flex items-center justify-between px-4 py-3 bg-emerald-50/50 border border-emerald-100 rounded-lg mb-4">
-              <div className="flex items-center gap-2">
-                <CheckCircle className="w-4 h-4 text-emerald-500" />
-                <span className="text-sm text-emerald-700">
-                  Key configured: <span className="font-mono">{maskedKey}</span>
-                </span>
-              </div>
-              <button
-                onClick={() => handleDeleteKey('gemini')}
-                disabled={deleting}
-                className="text-red-400 hover:text-red-600 transition p-1"
-                title="Remove Gemini API key"
-              >
-                {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-              </button>
-            </div>
-          )}
-
-          <div className="relative">
-            <Key className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type={showKey ? 'text' : 'password'}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              className="input-field pl-10 pr-10"
-              placeholder={maskedKey ? 'Enter new key to replace' : 'AIza...'}
-            />
-            <button
-              type="button"
-              onClick={() => setShowKey(!showKey)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition"
-            >
-              {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-
-        {/* API Key Configuration — Anthropic */}
-        <div className="card p-6 mb-6">
-          <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
-            <Key className="w-4 h-4" />
-            Anthropic API Key
-            {provider === 'anthropic' && (
-              <span className="text-xs font-normal text-themis-500 bg-themis-50 px-2 py-0.5 rounded-full">Active</span>
-            )}
-          </h2>
-          <p className="text-xs text-gray-500 mb-5">
-            Your key is encrypted at rest. Get one at{' '}
-            <a
-              href="https://console.anthropic.com/settings/keys"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-themis-500 hover:text-themis-700 underline"
-            >
-              console.anthropic.com
-            </a>
-          </p>
-
-          {anthropicMaskedKey && (
-            <div className="flex items-center justify-between px-4 py-3 bg-emerald-50/50 border border-emerald-100 rounded-lg mb-4">
-              <div className="flex items-center gap-2">
-                <CheckCircle className="w-4 h-4 text-emerald-500" />
-                <span className="text-sm text-emerald-700">
-                  Key configured: <span className="font-mono">{anthropicMaskedKey}</span>
-                </span>
-              </div>
-              <button
-                onClick={() => handleDeleteKey('anthropic')}
-                disabled={deleting}
-                className="text-red-400 hover:text-red-600 transition p-1"
-                title="Remove Anthropic API key"
-              >
-                {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-              </button>
-            </div>
-          )}
-
-          <div className="relative">
-            <Key className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type={showAnthropicKey ? 'text' : 'password'}
-              value={anthropicKey}
-              onChange={(e) => setAnthropicKey(e.target.value)}
-              className="input-field pl-10 pr-10"
-              placeholder={anthropicMaskedKey ? 'Enter new key to replace' : 'sk-ant-...'}
-            />
-            <button
-              type="button"
-              onClick={() => setShowAnthropicKey(!showAnthropicKey)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition"
-            >
-              {showAnthropicKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-
-        {/* Model Selection */}
-        <div className="card p-6 mb-6">
-          <h2 className="text-sm font-bold text-themis-800 flex items-center gap-2 mb-1">
-            <Cpu className="w-4 h-4" />
-            Model Preference
-          </h2>
-          <p className="text-xs text-gray-500 mb-4">
-            Choose which {activeProvider.name} model to use for search synthesis and feedback analysis.
-          </p>
-
-          <div className="space-y-2">
-            {activeProvider.models.map((m) => (
-              <label
-                key={m.id}
-                className={`flex items-center gap-3 p-3.5 rounded-lg border cursor-pointer transition-all ${
-                  model === m.id
-                    ? 'border-themis-300 bg-themis-50/50 shadow-sm'
-                    : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50/50'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="model"
-                  value={m.id}
-                  checked={model === m.id}
-                  onChange={(e) => setModel(e.target.value)}
-                  className="w-4 h-4 text-themis-600 focus:ring-themis-500/30"
-                />
-                <div>
-                  <span className="text-sm font-medium text-themis-900">{m.name}</span>
-                  <span className="text-xs text-gray-500 ml-2">{m.description}</span>
-                </div>
+          {/* API Key for selected provider */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-medium text-gray-700 flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5" />
+                {activeProvider.name} API Key
               </label>
-            ))}
+              <a
+                href={activeProvider.keyHelpUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-themis-500 hover:text-themis-700 underline"
+              >
+                {activeProvider.keyHelpLabel}
+              </a>
+            </div>
+
+            {activeKeyMask && (
+              <div className="flex items-center justify-between px-3 py-2 bg-emerald-50/50 border border-emerald-100 rounded-lg mb-2">
+                <div className="flex items-center gap-1.5">
+                  <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
+                  <span className="text-xs text-emerald-700">
+                    Configured: <span className="font-mono">{activeKeyMask}</span>
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleDeleteKey(provider)}
+                  disabled={deleting}
+                  className="text-red-400 hover:text-red-600 transition p-0.5"
+                  title={`Remove ${activeProvider.name} API key`}
+                >
+                  {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            )}
+
+            <div className="relative">
+              <Key className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              {provider === 'gemini' ? (
+                <input
+                  type={showKey ? 'text' : 'password'}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  className="input-field pl-10 pr-10"
+                  placeholder={maskedKey ? 'Enter new key to replace' : activeProvider.keyPlaceholder}
+                />
+              ) : (
+                <input
+                  type={showAnthropicKey ? 'text' : 'password'}
+                  value={anthropicKey}
+                  onChange={(e) => setAnthropicKey(e.target.value)}
+                  className="input-field pl-10 pr-10"
+                  placeholder={anthropicMaskedKey ? 'Enter new key to replace' : activeProvider.keyPlaceholder}
+                />
+              )}
+              <button
+                type="button"
+                onClick={() => provider === 'gemini' ? setShowKey(!showKey) : setShowAnthropicKey(!showAnthropicKey)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition"
+              >
+                {(provider === 'gemini' ? showKey : showAnthropicKey)
+                  ? <EyeOff className="w-4 h-4" />
+                  : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Model selection for selected provider */}
+          <div>
+            <label className="text-xs font-medium text-gray-700 mb-1.5 block">Model</label>
+            <div className="space-y-1.5">
+              {activeProvider.models.map((m) => (
+                <label
+                  key={m.id}
+                  className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                    model === m.id
+                      ? 'border-themis-300 bg-themis-50/50 shadow-sm'
+                      : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50/50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="model"
+                    value={m.id}
+                    checked={model === m.id}
+                    onChange={(e) => setModel(e.target.value)}
+                    className="w-4 h-4 text-themis-600 focus:ring-themis-500/30"
+                  />
+                  <div>
+                    <span className="text-sm font-medium text-themis-900">{m.name}</span>
+                    <span className="text-xs text-gray-500 ml-2">{m.description}</span>
+                  </div>
+                </label>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -597,7 +530,7 @@ export default function SettingsPage() {
           className="btn-primary gap-2 w-full sm:w-auto"
         >
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          Save Provider & Keys
+          Save AI Settings
         </button>
       </div>
     </AppShell>
