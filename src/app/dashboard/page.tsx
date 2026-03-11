@@ -192,7 +192,7 @@ export default function DashboardPage() {
           .eq('user_id', session.user.id),
         supabase
           .from('user_settings')
-          .select('api_key_encrypted, bio_text')
+          .select('api_key_encrypted, anthropic_key_encrypted, bio_text')
           .eq('user_id', session.user.id)
           .single(),
         fetchScores(session.user.id),
@@ -258,7 +258,7 @@ export default function DashboardPage() {
       }
 
       const bioText = settingsResult.data?.bio_text || null;
-      const userHasApiKey = !!settingsResult.data?.api_key_encrypted;
+      const userHasApiKey = !!(settingsResult.data?.api_key_encrypted || settingsResult.data?.anthropic_key_encrypted);
       const userHasBio = !!bioText;
       setHasApiKey(userHasApiKey);
       setHasBio(userHasBio);
