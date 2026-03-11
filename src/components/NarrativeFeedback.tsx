@@ -126,6 +126,8 @@ export default function NarrativeFeedback({ caseId, compact = false, onSubmitSuc
 
       if (data.extraction_failed) {
         setError('Feedback saved, but preference extraction failed. It will be retried later.');
+      } else if (data.extraction_skipped) {
+        setError('Feedback saved. Add an API key in Settings to enable automatic preference extraction.');
       }
 
       setTimeout(() => setSuccess(false), 3000);

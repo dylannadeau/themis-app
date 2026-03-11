@@ -98,33 +98,7 @@ export async function POST(request: NextRequest) {
 
     const userId = session.user.id;
 
-    // Get user settings and resolve AI provider
-    const { data: settings } = await supabase
-      .from('user_settings')
-      .select('api_key_encrypted, anthropic_key_encrypted, ai_provider, model_preference')
-      .eq('user_id', userId)
-      .single();
-
-    const providerConfig = settings ? resolveProviderConfig(settings) : null;
-    if (!providerConfig) {
-      return NextResponse.json(
-        { error: 'API key required. Add one in Settings.' },
-        { status: 400 },
-      );
-    }
-
-    // Get case metadata
-    const { data: caseData } = await supabase
-      .from('cases')
-      .select('case_name, court_name, nature_of_suit, cause_of_action, judge, entity, plaintiffs, defendants, attorneys, complaint_summary')
-      .eq('id', case_id)
-      .single();
-
-    if (!caseData) {
-      return NextResponse.json({ error: 'Case not found' }, { status: 404 });
-    }
-
-    // Save/update narrative
+    // Save/update narrative first — this never requires an API key
     const { data: savedNarrative, error: narrativeError } = await supabase
       .from('user_narratives')
       .upsert(
@@ -149,13 +123,49 @@ export async function POST(request: NextRequest) {
       .eq('case_id', case_id)
       .eq('source', 'narrative');
 
+    // Resolve AI provider for preference extraction (optional)
+    const { data: settings } = await supabase
+      .from('user_settings')
+      .select('api_key_encrypted, anthropic_key_encrypted, ai_provider, model_preference')
+      .eq('user_id', userId)
+      .single();
+
+    const providerConfig = settings ? resolveProviderConfig(settings) : null;
+
+    // If no API key is configured, save the narrative but skip AI extraction
+    if (!providerConfig) {
+      return NextResponse.json({
+        success: true,
+        narrative_id: savedNarrative.id,
+        signals: [],
+        extraction_skipped: true,
+      });
+    }
+
+    // Get case metadata for AI extraction
+    const { data: caseData } = await supabase
+      .from('cases')
+      .select('case_name, court_name, nature_of_suit, cause_of_action, judge, entity, plaintiffs, defendants, attorneys, complaint_summary')
+      .eq('id', case_id)
+      .single();
+
+    if (!caseData) {
+      // Narrative already saved; return success even if case metadata lookup fails
+      return NextResponse.json({
+        success: true,
+        narrative_id: savedNarrative.id,
+        signals: [],
+        extraction_skipped: true,
+      });
+    }
+
     // Extract preferences via AI provider
     let signals: ExtractedSignal[] = [];
     try {
       signals = await extractPreferences(narrative.trim(), caseData, providerConfig);
     } catch (err) {
       console.error('AI extraction failed:', err);
-      // Non-fatal: save narrative but skip extraction
+      // Non-fatal: narrative already saved, skip extraction
       return NextResponse.json({
         success: true,
         narrative_id: savedNarrative.id,
