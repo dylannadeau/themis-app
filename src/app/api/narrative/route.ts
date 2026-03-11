@@ -134,6 +134,9 @@ export async function POST(request: NextRequest) {
 
     // If no API key is configured, save the narrative but skip AI extraction
     if (!providerConfig) {
+      // Rebuild profile since old signals were deleted above
+      await rebuildPreferenceProfile(supabase, userId);
+      await markScoresStale(supabase, userId);
       return NextResponse.json({
         success: true,
         narrative_id: savedNarrative.id,
@@ -150,7 +153,9 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (!caseData) {
-      // Narrative already saved; return success even if case metadata lookup fails
+      // Rebuild profile since old signals were deleted above
+      await rebuildPreferenceProfile(supabase, userId);
+      await markScoresStale(supabase, userId);
       return NextResponse.json({
         success: true,
         narrative_id: savedNarrative.id,
@@ -165,7 +170,9 @@ export async function POST(request: NextRequest) {
       signals = await extractPreferences(narrative.trim(), caseData, providerConfig);
     } catch (err) {
       console.error('AI extraction failed:', err);
-      // Non-fatal: narrative already saved, skip extraction
+      // Non-fatal: narrative already saved, rebuild profile since old signals were deleted
+      await rebuildPreferenceProfile(supabase, userId);
+      await markScoresStale(supabase, userId);
       return NextResponse.json({
         success: true,
         narrative_id: savedNarrative.id,
@@ -187,10 +194,10 @@ export async function POST(request: NextRequest) {
       }));
 
       await supabase.from('preference_signals').insert(signalRows);
-
-      // Rebuild preference profile from ALL signals (not incremental, to handle edits correctly)
-      await rebuildPreferenceProfile(supabase, userId);
     }
+
+    // Always rebuild preference profile after modifying signals (handles edits, deletions, and new signals)
+    await rebuildPreferenceProfile(supabase, userId);
 
     // Mark scores stale after preference changes
     await markScoresStale(supabase, userId);
