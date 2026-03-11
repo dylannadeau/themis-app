@@ -126,42 +126,40 @@ export async function generateText(
 
 /**
  * Resolve an AIProviderConfig from a user_settings row.
- * Returns null if no usable API key is found for the selected provider.
+ * Tries the user's selected provider first, then falls back to the other
+ * provider if the selected one has no key configured.
+ * Returns null only if no usable API key is found for either provider.
  */
 export function resolveProviderConfig(
   settings: UserSettingsRow,
 ): AIProviderConfig | null {
-  const provider: AIProvider = settings.ai_provider || 'gemini';
+  const preferredProvider: AIProvider = settings.ai_provider || 'gemini';
+  const fallbackProvider: AIProvider = preferredProvider === 'gemini' ? 'anthropic' : 'gemini';
 
-  const defaultModel =
-    AI_PROVIDERS.find((p) => p.id === provider)?.models[0]?.id ?? 'gemini-2.0-flash';
+  for (const provider of [preferredProvider, fallbackProvider]) {
+    const defaultModel =
+      AI_PROVIDERS.find((p) => p.id === provider)?.models[0]?.id ?? 'gemini-2.0-flash';
 
-  if (provider === 'anthropic') {
-    if (!settings.anthropic_key_encrypted) return null;
+    const encryptedKey =
+      provider === 'anthropic'
+        ? settings.anthropic_key_encrypted
+        : settings.api_key_encrypted;
+
+    if (!encryptedKey) continue;
+
     try {
-      const apiKey = decrypt(settings.anthropic_key_encrypted);
+      const apiKey = decrypt(encryptedKey);
       return {
         provider,
         apiKey,
         modelId: settings.model_preference || defaultModel,
       };
     } catch {
-      return null;
+      continue;
     }
   }
 
-  // Default: Gemini
-  if (!settings.api_key_encrypted) return null;
-  try {
-    const apiKey = decrypt(settings.api_key_encrypted);
-    return {
-      provider,
-      apiKey,
-      modelId: settings.model_preference || defaultModel,
-    };
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 /**

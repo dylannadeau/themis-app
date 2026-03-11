@@ -240,7 +240,7 @@ describe('resolveProviderConfig', () => {
     expect(config!.modelId).toBe('gemini-2.0-flash'); // default model
   });
 
-  it('returns null when gemini selected but no gemini key', () => {
+  it('falls back to anthropic when gemini selected but no gemini key', () => {
     const config = resolveProviderConfig({
       ai_provider: 'gemini',
       api_key_encrypted: null,
@@ -248,10 +248,12 @@ describe('resolveProviderConfig', () => {
       model_preference: null,
     });
 
-    expect(config).toBeNull();
+    expect(config).not.toBeNull();
+    expect(config!.provider).toBe('anthropic');
+    expect(config!.apiKey).toBe('decrypted-enc-claude');
   });
 
-  it('returns null when anthropic selected but no anthropic key', () => {
+  it('falls back to gemini when anthropic selected but no anthropic key', () => {
     const config = resolveProviderConfig({
       ai_provider: 'anthropic',
       api_key_encrypted: 'enc-gemini',
@@ -259,10 +261,35 @@ describe('resolveProviderConfig', () => {
       model_preference: null,
     });
 
+    expect(config).not.toBeNull();
+    expect(config!.provider).toBe('gemini');
+    expect(config!.apiKey).toBe('decrypted-enc-gemini');
+  });
+
+  it('returns null when no keys are configured', () => {
+    const config = resolveProviderConfig({
+      ai_provider: 'gemini',
+      api_key_encrypted: null,
+      anthropic_key_encrypted: null,
+      model_preference: null,
+    });
+
     expect(config).toBeNull();
   });
 
-  it('returns null when decryption fails', () => {
+  it('falls back to other provider when decryption fails', () => {
+    const config = resolveProviderConfig({
+      ai_provider: 'gemini',
+      api_key_encrypted: 'bad-encrypted',
+      anthropic_key_encrypted: 'enc-claude',
+      model_preference: null,
+    });
+
+    expect(config).not.toBeNull();
+    expect(config!.provider).toBe('anthropic');
+  });
+
+  it('returns null when decryption fails and no fallback key', () => {
     const config = resolveProviderConfig({
       ai_provider: 'gemini',
       api_key_encrypted: 'bad-encrypted',

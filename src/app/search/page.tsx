@@ -39,10 +39,10 @@ export default function SearchPage() {
       if (!session) { router.push('/auth'); return; }
       const { data } = await supabase
         .from('user_settings')
-        .select('api_key_encrypted')
+        .select('api_key_encrypted, anthropic_key_encrypted')
         .eq('user_id', session.user.id)
         .single();
-      setHasApiKey(!!data?.api_key_encrypted);
+      setHasApiKey(!!(data?.api_key_encrypted || data?.anthropic_key_encrypted));
     }
     checkKey();
   }, [supabase, router]);
