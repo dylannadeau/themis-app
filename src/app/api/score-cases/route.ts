@@ -221,8 +221,13 @@ export async function POST(request: NextRequest) {
 
     const providerConfig = settings ? resolveProviderConfig(settings) : null;
     if (!providerConfig) {
+      const hasGeminiKey = !!settings?.api_key_encrypted;
+      const hasAnthropicKey = !!settings?.anthropic_key_encrypted;
+      const errorDetail = hasGeminiKey || hasAnthropicKey
+        ? 'An API key is saved but could not be decrypted. Try re-saving your key in Settings.'
+        : 'Add your API key in Settings to enable scoring.';
       return NextResponse.json(
-        { error: 'Add your API key in Settings to enable scoring.' },
+        { error: errorDetail },
         { status: 400 },
       );
     }
