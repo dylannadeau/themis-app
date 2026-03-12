@@ -6,7 +6,15 @@ const TAG_LENGTH = 16;
 
 function getEncryptionKey(): Buffer {
   const secret = process.env.API_KEY_ENCRYPTION_SECRET;
-  if (secret) return Buffer.from(secret, 'hex');
+  if (secret) {
+    const buf = Buffer.from(secret, 'hex');
+    if (buf.length !== 32) {
+      throw new Error(
+        `API_KEY_ENCRYPTION_SECRET must be 32 bytes (64 hex chars), got ${buf.length} bytes (${secret.length} chars). Generate with: openssl rand -hex 32`
+      );
+    }
+    return buf;
+  }
 
   // Derive a key from the Supabase anon key so encryption works without extra config
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
