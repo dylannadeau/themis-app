@@ -137,8 +137,9 @@ export function resolveProviderConfig(
   const fallbackProvider: AIProvider = preferredProvider === 'gemini' ? 'anthropic' : 'gemini';
 
   for (const provider of [preferredProvider, fallbackProvider]) {
-    const defaultModel =
-      AI_PROVIDERS.find((p) => p.id === provider)?.models[0]?.id ?? 'gemini-2.0-flash';
+    const providerDef = AI_PROVIDERS.find((p) => p.id === provider);
+    const defaultModel = providerDef?.models[0]?.id ?? 'gemini-2.0-flash';
+    const providerModelIds = new Set(providerDef?.models.map((m) => m.id) ?? []);
 
     const encryptedKey =
       provider === 'anthropic'
@@ -149,12 +150,19 @@ export function resolveProviderConfig(
 
     try {
       const apiKey = decrypt(encryptedKey);
+      // Use stored model_preference only if it belongs to this provider;
+      // otherwise fall back to the provider's default model.
+      const modelId =
+        settings.model_preference && providerModelIds.has(settings.model_preference)
+          ? settings.model_preference
+          : defaultModel;
       return {
         provider,
         apiKey,
-        modelId: settings.model_preference || defaultModel,
+        modelId,
       };
-    } catch {
+    } catch (err) {
+      console.error(`Failed to decrypt ${provider} API key:`, err);
       continue;
     }
   }
