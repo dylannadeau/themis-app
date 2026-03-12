@@ -8,12 +8,14 @@ function getEncryptionKey(): Buffer {
   const secret = process.env.API_KEY_ENCRYPTION_SECRET;
   if (secret) {
     const buf = Buffer.from(secret, 'hex');
-    if (buf.length !== 32) {
-      throw new Error(
-        `API_KEY_ENCRYPTION_SECRET must be 32 bytes (64 hex chars), got ${buf.length} bytes (${secret.length} chars). Generate with: openssl rand -hex 32`
-      );
+    if (buf.length === 32) {
+      return buf;
     }
-    return buf;
+    // Invalid secret — log a warning and fall through to the anon-key fallback
+    // so that encryption still works rather than blocking the user entirely.
+    console.warn(
+      `API_KEY_ENCRYPTION_SECRET is set but invalid (expected 32 bytes / 64 hex chars, got ${buf.length} bytes / ${secret.length} chars). Falling back to derived key. Generate a valid secret with: openssl rand -hex 32`
+    );
   }
 
   // Derive a key from the Supabase anon key so encryption works without extra config
