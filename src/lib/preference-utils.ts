@@ -44,7 +44,8 @@ export async function rebuildPreferenceProfile(supabase: any, userId: string) {
 
   // Insert profile rows
   const profileRows = [...profileMap.entries()].map(([key, val]) => {
-    const [dimension, entity] = key.split('::');
+    const [dimension, ...entityParts] = key.split('::');
+    const entity = entityParts.join('::');
     return {
       user_id: userId,
       dimension,

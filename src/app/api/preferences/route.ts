@@ -35,31 +35,45 @@ export async function GET() {
     console.error('Failed to fetch dimension weights:', weightsResult.error.message);
   }
 
-  // Auto-repair: if weights exist but profile is empty, rebuild from signals
-  const profile = profileResult.data || [];
+  let profile = profileResult.data || [];
   const weights = weightsResult.data || [];
-  if (profile.length === 0 && weights.length > 0) {
-    console.log('Detected inconsistent preference data — rebuilding profile from signals');
-    await rebuildPreferenceProfile(supabase, userId);
 
-    // Re-fetch after rebuild
-    const [rebuiltProfile, rebuiltWeights] = await Promise.all([
-      supabase
-        .from('user_preference_profile')
-        .select('dimension, entity, cumulative_score, mention_count, avg_score')
-        .eq('user_id', userId)
-        .order('mention_count', { ascending: false }),
-      supabase
-        .from('user_dimension_weights')
-        .select('dimension, total_mentions, weight')
-        .eq('user_id', userId),
-    ]);
+  // Fallback: if profile table is empty but signals exist, compute profile on-the-fly
+  if (profile.length === 0) {
+    const { data: allSignals } = await supabase
+      .from('preference_signals')
+      .select('dimension, entity, score')
+      .eq('user_id', userId);
 
-    return NextResponse.json({
-      profile: rebuiltProfile.data || [],
-      dimension_weights: rebuiltWeights.data || [],
-      narrative_count: narrativeCountResult.count ?? 0,
-    });
+    if (allSignals && allSignals.length > 0) {
+      const profileMap = new Map<string, { cumulative_score: number; mention_count: number }>();
+      for (const signal of allSignals) {
+        const key = `${signal.dimension}::${signal.entity}`;
+        const existing = profileMap.get(key) || { cumulative_score: 0, mention_count: 0 };
+        existing.cumulative_score += Number(signal.score);
+        existing.mention_count += 1;
+        profileMap.set(key, existing);
+      }
+
+      profile = [...profileMap.entries()]
+        .map(([key, val]) => {
+          const [dimension, ...entityParts] = key.split('::');
+          const entity = entityParts.join('::');
+          return {
+            dimension,
+            entity,
+            cumulative_score: val.cumulative_score,
+            mention_count: val.mention_count,
+            avg_score: val.mention_count > 0 ? val.cumulative_score / val.mention_count : 0,
+          };
+        })
+        .sort((a, b) => b.mention_count - a.mention_count);
+
+      // Try to repair the table in the background (fire-and-forget)
+      rebuildPreferenceProfile(supabase, userId).catch((err: any) =>
+        console.error('Background profile rebuild failed:', err)
+      );
+    }
   }
 
   return NextResponse.json({
