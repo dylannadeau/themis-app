@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase-server';
+import { rebuildPreferenceProfile } from '@/lib/preference-utils';
 
 export async function GET() {
   const supabase = createServerSupabaseClient();
@@ -27,9 +28,57 @@ export async function GET() {
       .eq('user_id', userId),
   ]);
 
+  if (profileResult.error) {
+    console.error('Failed to fetch preference profile:', profileResult.error.message);
+  }
+  if (weightsResult.error) {
+    console.error('Failed to fetch dimension weights:', weightsResult.error.message);
+  }
+
+  let profile = profileResult.data || [];
+  const weights = weightsResult.data || [];
+
+  // Fallback: if profile table is empty but signals exist, compute profile on-the-fly
+  if (profile.length === 0) {
+    const { data: allSignals } = await supabase
+      .from('preference_signals')
+      .select('dimension, entity, score')
+      .eq('user_id', userId);
+
+    if (allSignals && allSignals.length > 0) {
+      const profileMap = new Map<string, { cumulative_score: number; mention_count: number }>();
+      for (const signal of allSignals) {
+        const key = `${signal.dimension}::${signal.entity}`;
+        const existing = profileMap.get(key) || { cumulative_score: 0, mention_count: 0 };
+        existing.cumulative_score += Number(signal.score);
+        existing.mention_count += 1;
+        profileMap.set(key, existing);
+      }
+
+      profile = [...profileMap.entries()]
+        .map(([key, val]) => {
+          const [dimension, ...entityParts] = key.split('::');
+          const entity = entityParts.join('::');
+          return {
+            dimension,
+            entity,
+            cumulative_score: val.cumulative_score,
+            mention_count: val.mention_count,
+            avg_score: val.mention_count > 0 ? val.cumulative_score / val.mention_count : 0,
+          };
+        })
+        .sort((a, b) => b.mention_count - a.mention_count);
+
+      // Try to repair the table in the background (fire-and-forget)
+      rebuildPreferenceProfile(supabase, userId).catch((err: any) =>
+        console.error('Background profile rebuild failed:', err)
+      );
+    }
+  }
+
   return NextResponse.json({
-    profile: profileResult.data || [],
-    dimension_weights: weightsResult.data || [],
+    profile,
+    dimension_weights: weights,
     narrative_count: narrativeCountResult.count ?? 0,
   });
 }

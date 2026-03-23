@@ -34,7 +34,8 @@ export async function rebuildPreferenceProfile(supabase: any, userId: string) {
   for (const signal of allSignals as SignalRow[]) {
     const key = `${signal.dimension}::${signal.entity}`;
     const existing = profileMap.get(key) || { cumulative_score: 0, mention_count: 0 };
-    existing.cumulative_score += signal.score;
+    // Ensure score is treated as a number — PostgREST may return numeric columns as strings
+    existing.cumulative_score += Number(signal.score);
     existing.mention_count += 1;
     profileMap.set(key, existing);
 
@@ -43,7 +44,8 @@ export async function rebuildPreferenceProfile(supabase: any, userId: string) {
 
   // Insert profile rows
   const profileRows = [...profileMap.entries()].map(([key, val]) => {
-    const [dimension, entity] = key.split('::');
+    const [dimension, ...entityParts] = key.split('::');
+    const entity = entityParts.join('::');
     return {
       user_id: userId,
       dimension,
@@ -55,7 +57,10 @@ export async function rebuildPreferenceProfile(supabase: any, userId: string) {
   });
 
   if (profileRows.length > 0) {
-    await supabase.from('user_preference_profile').insert(profileRows);
+    const { error: profileError } = await supabase.from('user_preference_profile').insert(profileRows);
+    if (profileError) {
+      console.error('Failed to insert preference profile rows:', profileError.message);
+    }
   }
 
   // Insert dimension weights
@@ -68,7 +73,10 @@ export async function rebuildPreferenceProfile(supabase: any, userId: string) {
   }));
 
   if (weightRows.length > 0) {
-    await supabase.from('user_dimension_weights').insert(weightRows);
+    const { error: weightsError } = await supabase.from('user_dimension_weights').insert(weightRows);
+    if (weightsError) {
+      console.error('Failed to insert dimension weights:', weightsError.message);
+    }
   }
 }
 
