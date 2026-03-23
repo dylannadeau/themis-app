@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase-server';
+import { rebuildPreferenceProfile } from '@/lib/preference-utils';
 
 export async function GET() {
   const supabase = createServerSupabaseClient();
@@ -27,9 +28,43 @@ export async function GET() {
       .eq('user_id', userId),
   ]);
 
+  if (profileResult.error) {
+    console.error('Failed to fetch preference profile:', profileResult.error.message);
+  }
+  if (weightsResult.error) {
+    console.error('Failed to fetch dimension weights:', weightsResult.error.message);
+  }
+
+  // Auto-repair: if weights exist but profile is empty, rebuild from signals
+  const profile = profileResult.data || [];
+  const weights = weightsResult.data || [];
+  if (profile.length === 0 && weights.length > 0) {
+    console.log('Detected inconsistent preference data — rebuilding profile from signals');
+    await rebuildPreferenceProfile(supabase, userId);
+
+    // Re-fetch after rebuild
+    const [rebuiltProfile, rebuiltWeights] = await Promise.all([
+      supabase
+        .from('user_preference_profile')
+        .select('dimension, entity, cumulative_score, mention_count, avg_score')
+        .eq('user_id', userId)
+        .order('mention_count', { ascending: false }),
+      supabase
+        .from('user_dimension_weights')
+        .select('dimension, total_mentions, weight')
+        .eq('user_id', userId),
+    ]);
+
+    return NextResponse.json({
+      profile: rebuiltProfile.data || [],
+      dimension_weights: rebuiltWeights.data || [],
+      narrative_count: narrativeCountResult.count ?? 0,
+    });
+  }
+
   return NextResponse.json({
-    profile: profileResult.data || [],
-    dimension_weights: weightsResult.data || [],
+    profile,
+    dimension_weights: weights,
     narrative_count: narrativeCountResult.count ?? 0,
   });
 }
