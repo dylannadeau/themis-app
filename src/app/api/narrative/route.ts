@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase-server';
+import { requireAuth } from '@/lib/supabase-server';
 import { rebuildPreferenceProfile, markScoresStale } from '@/lib/preference-utils';
 import { generateText, resolveProviderConfig } from '@/lib/ai-provider';
+import { cleanJsonResponse } from '@/lib/utils';
 
 const DIMENSIONS = ['firm', 'attorney', 'client', 'practice_area', 'case_type', 'jurisdiction', 'judge', 'topic'] as const;
 
@@ -59,7 +60,7 @@ If the user didn't express sentiment about any dimension, respond with an empty 
   if (!text) return [];
 
   // Clean up response - strip markdown fences if present
-  const cleaned = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+  const cleaned = cleanJsonResponse(text);
 
   try {
     const signals: ExtractedSignal[] = JSON.parse(cleaned);
@@ -85,11 +86,9 @@ If the user didn't express sentiment about any dimension, respond with an empty 
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createServerSupabaseClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = await requireAuth();
+    if ('error' in auth) return auth.error;
+    const { supabase, session } = auth;
 
     const { case_id, narrative } = await request.json();
     if (!case_id || !narrative || typeof narrative !== 'string' || !narrative.trim()) {
@@ -218,11 +217,9 @@ export async function POST(request: NextRequest) {
  */
 export async function GET(request: NextRequest) {
   try {
-    const supabase = createServerSupabaseClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = await requireAuth();
+    if ('error' in auth) return auth.error;
+    const { supabase, session } = auth;
 
     const caseId = request.nextUrl.searchParams.get('case_id');
     if (!caseId) {

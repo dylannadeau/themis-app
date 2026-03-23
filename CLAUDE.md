@@ -42,8 +42,7 @@ src/
 │   ├── settings/page.tsx         # BYOK key, model selection, bio upload
 │   ├── layout.tsx                # Root layout (fonts, globals)
 │   ├── page.tsx                  # Root → redirects to /dashboard
-│   ├── globals.css               # Tailwind base + custom CSS
-│   └── middleware.ts             # IMPORTANT: this is unused (see src/middleware.ts)
+│   └── globals.css               # Tailwind base + custom CSS
 ├── components/
 │   ├── AppShell.tsx              # Sticky nav, mobile menu, sign-out
 │   ├── CaseCard.tsx              # Case preview: score badge, reactions, favorites, narrative toggle
@@ -59,12 +58,11 @@ src/
 │   ├── personalization.ts        # Core reranking logic (see Personalization section)
 │   ├── preference-utils.ts       # Profile rebuild, reaction signals, score staleness
 │   ├── supabase-browser.ts       # Client-side Supabase (singleton)
-│   ├── supabase-server.ts        # Server-side Supabase with SSR cookie handling
+│   ├── supabase-server.ts        # Server-side Supabase + requireAuth() helper
+│   ├── utils.ts                  # Shared utilities (sleep, cleanJsonResponse)
 │   └── types.ts                  # All TypeScript interfaces + GEMINI_MODELS constant
 └── middleware.ts                 # Route protection + auth redirect (THIS is the active one)
 ```
-
-> **Note**: There is a `src/app/middleware.ts` that appears to be a leftover — the active middleware is `src/middleware.ts` at the project root of `src/`.
 
 ## Environment Variables
 
@@ -163,7 +161,7 @@ Per-user relevance scores. One row per user-case pair.
 | case_id | text | NO | FK → cases.id |
 | score | integer | NO | 1-10, CHECK constraint |
 | reasoning | text | YES | One sentence from Gemini |
-| source | text | NO | Always 'direct' |
+| source | text | NO | 'direct' (app writes 'direct'; DB default is 'cluster') |
 | stale | boolean | YES | True after preference changes |
 | scored_at | timestamptz | YES | |
 | | | | UNIQUE(user_id, case_id) |
@@ -198,7 +196,7 @@ Individual preference data points extracted from reactions and narratives.
 |--------|------|----------|-------|
 | id | bigint | NO | PK |
 | user_id | uuid | NO | FK → auth.users |
-| narrative_id | bigint | NO | FK → user_narratives.id |
+| narrative_id | bigint | YES | FK → user_narratives.id (null for reaction-sourced signals) |
 | case_id | text | NO | FK → cases.id |
 | dimension | text | NO | e.g. 'practice_area', 'firm', 'jurisdiction', 'judge', 'topic' |
 | entity | text | NO | The extracted value |
@@ -217,7 +215,7 @@ Aggregated preference profile, rebuilt from all signals after each interaction.
 | entity | text | NO | |
 | cumulative_score | numeric | YES | Sum of signal scores |
 | mention_count | integer | YES | Number of signals |
-| avg_score | numeric | YES | cumulative_score / mention_count |
+| avg_score | numeric | YES | **Generated column**: cumulative_score / mention_count (computed by DB, do not insert/update) |
 | updated_at | timestamptz | YES | |
 
 ### `user_dimension_weights`
@@ -250,7 +248,7 @@ Complaint summaries with these values are filtered out everywhere:
 ```ts
 ['No complaint found', 'ERROR', 'Failed to fetch pleadings.', '']
 ```
-This constant is defined in `src/app/api/search/route.ts` as `SENTINEL_VALUES` and as `VALID_SUMMARY_FILTER` in `src/lib/types.ts` (Supabase PostgREST filter string).
+This constant is defined as `SENTINEL_VALUES` in `src/lib/types.ts` and imported by all routes that need it.
 
 ## Authentication & Middleware
 
@@ -258,7 +256,8 @@ This constant is defined in `src/app/api/search/route.ts` as `SENTINEL_VALUES` a
 - Sessions are cookie-based using `@supabase/ssr`.
 - `src/middleware.ts` protects `/dashboard`, `/search`, `/cases`, `/settings` — unauthenticated users redirect to `/auth`. Authenticated users on `/auth` redirect to `/dashboard`.
 - Middleware is excluded from `_next/static`, `_next/image`, `favicon.ico`, and `api/` routes.
-- Use `createServerSupabaseClient()` from `src/lib/supabase-server.ts` in API routes and Server Components.
+- API routes use `requireAuth()` from `src/lib/supabase-server.ts` — returns `{ supabase, session }` or `{ error: NextResponse }`. This replaces the old boilerplate of creating a client + checking session manually.
+- Server Components that need a Supabase client without auth can still use `createServerSupabaseClient()` directly.
 - Use `createBrowserSupabaseClient()` from `src/lib/supabase-browser.ts` in Client Components.
 
 ## Personalization Engine (`src/lib/personalization.ts`)
@@ -306,13 +305,13 @@ Bio text is tokenized, stop words removed, then matched against case text (compl
 
 ### Profile Rebuild Strategy
 
-When a narrative is updated, `rebuildPreferenceProfile()` in `src/lib/preference-utils.ts` fully clears and reconstructs `user_preference_profile` and `user_dimension_weights` from all `preference_signals`. It computes `avg_score = cumulative_score / mention_count` for each entity. This is intentional — it handles edits correctly at the cost of slightly more DB writes.
+When a narrative is updated, `rebuildPreferenceProfile()` in `src/lib/preference-utils.ts` fully clears and reconstructs `user_preference_profile` and `user_dimension_weights` from all `preference_signals`. It inserts `cumulative_score` and `mention_count`; `avg_score` is a generated column computed automatically by the database. This is intentional — it handles edits correctly at the cost of slightly more DB writes.
 
 ## Preference Utilities (`src/lib/preference-utils.ts`)
 
 Shared functions used by the narrative and react API routes:
 
-- **`rebuildPreferenceProfile(supabase, userId)`** — Clears and reconstructs `user_preference_profile` and `user_dimension_weights` from all `preference_signals`. Computes cumulative_score, mention_count, and avg_score per dimension/entity pair.
+- **`rebuildPreferenceProfile(supabase, userId)`** — Clears and reconstructs `user_preference_profile` and `user_dimension_weights` from all `preference_signals`. Inserts cumulative_score and mention_count; avg_score is auto-computed by the database.
 - **`createReactionSignals(supabase, userId, caseId, reaction)`** — Generates preference signals from a like/dislike by mapping case metadata (firm, practice_area, jurisdiction, judge) to signals with attenuated scores.
 - **`deleteReactionSignals(supabase, userId, caseId)`** — Removes reaction-sourced signals for a user+case.
 - **`markScoresStale(supabase, userId)`** — Marks all `user_case_scores` as stale after preference changes, triggering re-scoring on next view.
@@ -372,7 +371,8 @@ The dashboard (`src/app/dashboard/page.tsx`) has several important behaviors:
 - All interfaces are in `src/lib/types.ts` — add new shared types there.
 - Path alias `@/*` maps to `./src/*` (configured in `tsconfig.json`).
 - Strict mode is enabled — avoid `any` where possible, though some Supabase response types use it.
-- The `GEMINI_MODELS` constant in `types.ts` is the single source of truth for valid model IDs. Add new models there.
+- The `AI_PROVIDERS` constant in `types.ts` is the single source of truth for valid model IDs. Add new models there. (`GEMINI_MODELS` is a legacy export.)
+- Shared constants like `SENTINEL_VALUES` live in `types.ts`. Shared utility functions live in `lib/utils.ts`.
 
 ## Tailwind / Styling Conventions
 
@@ -407,7 +407,6 @@ The web app is read-only with respect to the case data — it never creates or m
 
 - **No test suite**: No Jest, Vitest, or testing setup exists. When adding tests, Vitest with React Testing Library is the recommended choice for this stack.
 - **No CI/CD**: Deployments are manual (Vercel git integration). Consider adding GitHub Actions for lint + type-check on PRs.
-- **`src/app/middleware.ts`**: Appears to be a stale duplicate of `src/middleware.ts`. Should be removed to avoid confusion.
 - **No rate limiting**: API routes have no rate limiting on Gemini calls — a user could trigger many expensive requests.
 - **`any` types in Supabase responses**: Several API routes cast Supabase results to `any`. Consider generating types with `supabase gen types typescript`.
 
@@ -417,12 +416,12 @@ The web app is read-only with respect to the case data — it never creates or m
 ```ts
 // src/app/api/your-feature/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase-server';
+import { requireAuth } from '@/lib/supabase-server';
 
 export async function POST(request: NextRequest) {
-  const supabase = createServerSupabaseClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const auth = await requireAuth();
+  if ('error' in auth) return auth.error;
+  const { supabase, session } = auth;
   // Always scope DB queries by session.user.id
 }
 ```
@@ -437,5 +436,5 @@ export async function POST(request: NextRequest) {
 3. Add dimension extraction logic to `extractCaseDimensions()` in `personalization.ts`
 4. Update Gemini extraction prompt in `narrative/route.ts` to include the new dimension
 
-### New Gemini Model
-Add to `GEMINI_MODELS` array in `src/lib/types.ts`. The settings page and API routes read from this constant.
+### New AI Model
+Add to the appropriate provider in the `AI_PROVIDERS` array in `src/lib/types.ts`. The settings page and API routes read from this constant. (`GEMINI_MODELS` is a legacy export kept for backward compatibility.)

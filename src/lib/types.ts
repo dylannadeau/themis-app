@@ -109,4 +109,4 @@ export const AI_PROVIDERS: AIProviderOption[] = [
   },
 ] as const;
 
-export const VALID_SUMMARY_FILTER = `complaint_summary.not.is.null,complaint_summary.neq.,complaint_summary.neq.No complaint found,complaint_summary.neq.ERROR,complaint_summary.neq.Failed to fetch pleadings.`;
+export const SENTINEL_VALUES: string[] = ['No complaint found', 'ERROR', 'Failed to fetch pleadings.', ''];

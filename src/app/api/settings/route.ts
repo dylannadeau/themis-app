@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase-server';
+import { requireAuth } from '@/lib/supabase-server';
 import { encrypt, maskApiKey } from '@/lib/encryption';
 import { markScoresStale } from '@/lib/preference-utils';
 import { validateApiKey } from '@/lib/ai-provider';
@@ -7,11 +7,9 @@ import { type AIProvider } from '@/lib/types';
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = createServerSupabaseClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = await requireAuth();
+    if ('error' in auth) return auth.error;
+    const { supabase, session } = auth;
 
     const { data } = await supabase
       .from('user_settings')
@@ -35,11 +33,9 @@ export async function GET(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const supabase = createServerSupabaseClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = await requireAuth();
+    if ('error' in auth) return auth.error;
+    const { supabase, session } = auth;
 
     const { api_key, anthropic_key, ai_provider, model_preference, bio_text } = await request.json();
     const userId = session.user.id;

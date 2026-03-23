@@ -1,17 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase-server';
+import { createServerSupabaseClient, requireAuth } from '@/lib/supabase-server';
 import { generateText, resolveProviderConfig, type AIProviderConfig } from '@/lib/ai-provider';
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function cleanJsonResponse(text: string): string {
-  return text
-    .replace(/```json\s*/g, '')
-    .replace(/```\s*/g, '')
-    .trim();
-}
+import { sleep, cleanJsonResponse } from '@/lib/utils';
 
 interface ScoreResult {
   case_id: string;
@@ -196,13 +186,9 @@ async function getUserNarratives(supabase: ReturnType<typeof createServerSupabas
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createServerSupabaseClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = await requireAuth();
+    if ('error' in auth) return auth.error;
+    const { supabase, session } = auth;
 
     const userId = session.user.id;
     const body = await request.json();

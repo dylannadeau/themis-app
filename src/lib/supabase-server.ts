@@ -1,4 +1,5 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 
 export function createServerSupabaseClient() {
@@ -29,4 +30,17 @@ export function createServerSupabaseClient() {
       },
     }
   );
+}
+
+/**
+ * Authenticate the request and return the Supabase client + session.
+ * Returns { supabase, session } on success, or a 401 NextResponse on failure.
+ */
+export async function requireAuth() {
+  const supabase = createServerSupabaseClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
+  }
+  return { supabase, session };
 }

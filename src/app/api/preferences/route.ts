@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase-server';
+import { requireAuth } from '@/lib/supabase-server';
 import { rebuildPreferenceProfile } from '@/lib/preference-utils';
 
 export async function GET() {
-  const supabase = createServerSupabaseClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const auth = await requireAuth();
+  if ('error' in auth) return auth.error;
+  const { supabase, session } = auth;
 
   const userId = session.user.id;
 
@@ -36,43 +34,32 @@ export async function GET() {
   }
 
   let profile = profileResult.data || [];
-  const weights = weightsResult.data || [];
+  let weights = weightsResult.data || [];
 
-  // Fallback: if profile table is empty but signals exist, compute profile on-the-fly
+  // Fallback: if profile table is empty but signals exist, rebuild and re-fetch
   if (profile.length === 0) {
-    const { data: allSignals } = await supabase
+    const { count } = await supabase
       .from('preference_signals')
-      .select('dimension, entity, score')
+      .select('id', { count: 'exact', head: true })
       .eq('user_id', userId);
 
-    if (allSignals && allSignals.length > 0) {
-      const profileMap = new Map<string, { cumulative_score: number; mention_count: number }>();
-      for (const signal of allSignals) {
-        const key = `${signal.dimension}::${signal.entity}`;
-        const existing = profileMap.get(key) || { cumulative_score: 0, mention_count: 0 };
-        existing.cumulative_score += Number(signal.score);
-        existing.mention_count += 1;
-        profileMap.set(key, existing);
-      }
+    if (count && count > 0) {
+      await rebuildPreferenceProfile(supabase, userId);
 
-      profile = [...profileMap.entries()]
-        .map(([key, val]) => {
-          const [dimension, ...entityParts] = key.split('::');
-          const entity = entityParts.join('::');
-          return {
-            dimension,
-            entity,
-            cumulative_score: val.cumulative_score,
-            mention_count: val.mention_count,
-            avg_score: val.mention_count > 0 ? val.cumulative_score / val.mention_count : 0,
-          };
-        })
-        .sort((a, b) => b.mention_count - a.mention_count);
+      const [rebuiltProfile, rebuiltWeights] = await Promise.all([
+        supabase
+          .from('user_preference_profile')
+          .select('dimension, entity, cumulative_score, mention_count, avg_score')
+          .eq('user_id', userId)
+          .order('mention_count', { ascending: false }),
+        supabase
+          .from('user_dimension_weights')
+          .select('dimension, total_mentions, weight')
+          .eq('user_id', userId),
+      ]);
 
-      // Try to repair the table in the background (fire-and-forget)
-      rebuildPreferenceProfile(supabase, userId).catch((err: any) =>
-        console.error('Background profile rebuild failed:', err)
-      );
+      profile = rebuiltProfile.data || [];
+      weights = rebuiltWeights.data || [];
     }
   }
 
@@ -84,11 +71,9 @@ export async function GET() {
 }
 
 export async function DELETE(request: NextRequest) {
-  const supabase = createServerSupabaseClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const auth = await requireAuth();
+  if ('error' in auth) return auth.error;
+  const { supabase, session } = auth;
 
   const userId = session.user.id;
   const { dimension, entity } = await request.json();
@@ -182,11 +167,9 @@ export async function DELETE(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  const supabase = createServerSupabaseClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const auth = await requireAuth();
+  if ('error' in auth) return auth.error;
+  const { supabase, session } = auth;
 
   const userId = session.user.id;
   const { dimension, entity, avg_score } = await request.json();
@@ -212,10 +195,10 @@ export async function PATCH(request: NextRequest) {
 
   const newCumulative = clampedScore * profileRow.mention_count;
 
+  // Only update cumulative_score — avg_score is a generated column in the DB
   const { error: updateError } = await supabase
     .from('user_preference_profile')
     .update({
-      avg_score: clampedScore,
       cumulative_score: newCumulative,
     })
     .eq('user_id', userId)

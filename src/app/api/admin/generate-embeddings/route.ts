@@ -1,17 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase-server';
-
-const SENTINEL_VALUES = ['No complaint found', 'ERROR', 'Failed to fetch pleadings.', ''];
+import { requireAuth } from '@/lib/supabase-server';
+import { SENTINEL_VALUES } from '@/lib/types';
 
 const HF_EMBEDDING_URL =
   'https://api-inference.huggingface.co/pipeline/feature-extraction/BAAI/bge-large-en-v1.5';
 
+import { sleep } from '@/lib/utils';
+
 const BATCH_SIZE = 5;
 const BATCH_DELAY_MS = 500;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function splitIntoChunks(text: string): string[] {
   // Split on double newlines (paragraph-level chunks)
@@ -50,13 +47,9 @@ async function embedText(text: string, hfToken: string): Promise<number[] | null
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = createServerSupabaseClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = await requireAuth();
+    if ('error' in auth) return auth.error;
+    const { supabase } = auth;
 
     // Total cases with valid summaries
     const { data: allCases, error: casesError } = await supabase
@@ -98,13 +91,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createServerSupabaseClient();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = await requireAuth();
+    if ('error' in auth) return auth.error;
+    const { supabase } = auth;
 
     const hfToken = process.env.HUGGINGFACE_API_TOKEN;
     if (!hfToken) {
