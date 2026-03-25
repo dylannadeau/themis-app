@@ -6,7 +6,7 @@ import { createClient } from '@/lib/supabase-browser';
 import { Scale, ArrowRight, Loader2, Mail, Lock, Eye, EyeOff } from 'lucide-react';
 
 export default function AuthPage() {
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -23,7 +23,13 @@ export default function AuthPage() {
     setSuccess(null);
 
     try {
-      if (mode === 'signup') {
+      if (mode === 'forgot') {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/auth/reset-password`,
+        });
+        if (error) throw error;
+        setSuccess('Check your email for a password reset link.');
+      } else if (mode === 'signup') {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
         setSuccess('Check your email for a confirmation link to activate your account.');
@@ -88,12 +94,14 @@ export default function AuthPage() {
           </div>
 
           <h2 className="font-display text-3xl text-themis-900 mb-2">
-            {mode === 'signin' ? 'Welcome back' : 'Create an account'}
+            {mode === 'signin' ? 'Welcome back' : mode === 'signup' ? 'Create an account' : 'Reset your password'}
           </h2>
           <p className="text-gray-500 mb-8">
             {mode === 'signin'
               ? 'Sign in to access your personalized case intelligence.'
-              : 'Get started with your own Themis account.'}
+              : mode === 'signup'
+              ? 'Get started with your own Themis account.'
+              : 'Enter your email and we\'ll send you a reset link.'}
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-5">
@@ -112,28 +120,30 @@ export default function AuthPage() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-themis-800 mb-1.5">Password</label>
-              <div className="relative">
-                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="input-field pl-10 pr-10"
-                  placeholder={mode === 'signup' ? 'At least 6 characters' : 'Your password'}
-                  minLength={6}
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition"
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
+            {mode !== 'forgot' && (
+              <div>
+                <label className="block text-sm font-medium text-themis-800 mb-1.5">Password</label>
+                <div className="relative">
+                  <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="input-field pl-10 pr-10"
+                    placeholder={mode === 'signup' ? 'At least 6 characters' : 'Your password'}
+                    minLength={6}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
             {error && (
               <div className="px-4 py-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-600 animate-slide-down">
@@ -152,25 +162,35 @@ export default function AuthPage() {
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
                 <>
-                  {mode === 'signin' ? 'Sign In' : 'Create Account'}
+                  {mode === 'signin' ? 'Sign In' : mode === 'signup' ? 'Create Account' : 'Send Reset Link'}
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
             </button>
           </form>
 
-          <div className="mt-6 text-center">
+          <div className="mt-6 text-center space-y-2">
+            {mode === 'signin' && (
+              <button
+                onClick={() => { setMode('forgot'); setError(null); setSuccess(null); }}
+                className="block w-full text-sm text-themis-500 hover:text-themis-700 transition"
+              >
+                Forgot your password?
+              </button>
+            )}
             <button
               onClick={() => {
                 setMode(mode === 'signin' ? 'signup' : 'signin');
                 setError(null);
                 setSuccess(null);
               }}
-              className="text-sm text-themis-500 hover:text-themis-700 transition"
+              className="block w-full text-sm text-themis-500 hover:text-themis-700 transition"
             >
               {mode === 'signin'
                 ? "Don't have an account? Sign up"
-                : 'Already have an account? Sign in'}
+                : mode === 'signup'
+                ? 'Already have an account? Sign in'
+                : 'Back to sign in'}
             </button>
           </div>
         </div>
