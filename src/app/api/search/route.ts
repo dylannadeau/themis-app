@@ -1,17 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase-server';
+import { requireAuth } from '@/lib/supabase-server';
 import { rerankWithProfile, PreferenceProfileEntry, DimensionWeight } from '@/lib/personalization';
 import { generateText, resolveProviderConfig } from '@/lib/ai-provider';
-
-const SENTINEL_VALUES = ['No complaint found', 'ERROR', 'Failed to fetch pleadings.', ''];
+import { SENTINEL_VALUES } from '@/lib/types';
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createServerSupabaseClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = await requireAuth();
+    if ('error' in auth) return auth.error;
+    const { supabase, session } = auth;
 
     const { query } = await request.json();
     if (!query || typeof query !== 'string') {

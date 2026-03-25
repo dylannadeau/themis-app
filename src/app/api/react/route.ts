@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase-server';
+import { requireAuth } from '@/lib/supabase-server';
 import {
   createReactionSignals,
   deleteReactionSignals,
@@ -9,11 +9,9 @@ import {
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createServerSupabaseClient();
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const auth = await requireAuth();
+    if ('error' in auth) return auth.error;
+    const { supabase, session } = auth;
 
     const { case_id, reaction } = await request.json();
     if (!case_id || (reaction !== 1 && reaction !== -1 && reaction !== null)) {

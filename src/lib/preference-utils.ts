@@ -42,7 +42,7 @@ export async function rebuildPreferenceProfile(supabase: any, userId: string) {
     dimensionCounts.set(signal.dimension, (dimensionCounts.get(signal.dimension) || 0) + 1);
   }
 
-  // Insert profile rows
+  // Insert profile rows (avg_score is a generated column in the DB)
   const profileRows = [...profileMap.entries()].map(([key, val]) => {
     const [dimension, ...entityParts] = key.split('::');
     const entity = entityParts.join('::');
@@ -52,7 +52,6 @@ export async function rebuildPreferenceProfile(supabase: any, userId: string) {
       entity,
       cumulative_score: val.cumulative_score,
       mention_count: val.mention_count,
-      avg_score: val.mention_count > 0 ? val.cumulative_score / val.mention_count : 0,
     };
   });
 
